@@ -80,7 +80,7 @@ export class AppComponent implements OnInit {
     this.store.dispatch(
       ReviewActions.setRole({ role: this.roleControl.value }),
     );
-    this.store.dispatch(ReviewActions.loadReviewData());
+    this.store.dispatch(ReviewActions.loadReviewData({}));
     this.roleControl.valueChanges.subscribe((role) => {
       localStorage.setItem("procurement-review-role", role);
       this.store.dispatch(ReviewActions.setRole({ role }));

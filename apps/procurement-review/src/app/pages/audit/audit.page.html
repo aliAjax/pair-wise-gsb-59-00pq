@@ -38,6 +38,14 @@
       <strong>{{ finalizedCount() }}</strong>
     </article>
     <article>
+      <span>当前版本独立意见</span>
+      <strong>{{ draftOpinionCount() }}</strong>
+    </article>
+    <article>
+      <span>定稿锁定意见</span>
+      <strong>{{ lockedOpinionCount() }}</strong>
+    </article>
+    <article>
       <span>当前导出条数</span>
       <strong>{{ filteredLogs().length }}</strong>
     </article>

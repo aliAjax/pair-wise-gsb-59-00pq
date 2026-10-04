@@ -2,6 +2,7 @@ import {
   ChangeDetectionStrategy,
   Component,
   computed,
+  effect,
   inject,
   signal,
 } from "@angular/core";
@@ -38,8 +39,11 @@ import { ReviewActions } from "../../core/state/review.actions";
 import {
   hasReviewDifference,
   selectClauseTree,
+  selectDraftVersion,
+  selectRevision,
   selectRole,
 } from "../../core/state/review.selectors";
+import { createClientMutationId } from "../../core/state/review.utils";
 import {
   ClarificationTagComponent,
   ClauseTypeTagComponent,
@@ -81,8 +85,33 @@ export class ClausesPage {
   readonly role = toSignal(this.store.select(selectRole), {
     initialValue: "reviewer_a",
   });
+  readonly draftVersion = toSignal(this.store.select(selectDraftVersion), {
+    initialValue: undefined,
+  });
+  readonly revision = toSignal(this.store.select(selectRevision), {
+    initialValue: 0,
+  });
   readonly selectedTreeKey = signal<string | null>(null);
   readonly selectedSupplierId = signal<string | null>(null);
+  /** 单次逻辑提交一个幂等键；提交失败重试时复用，成功后随 revision 轮换。 */
+  private readonly assessmentMutationId = signal(
+    createClientMutationId("op"),
+  );
+  private readonly clarificationMutationId = signal(
+    createClientMutationId("cl"),
+  );
+  private lastRevision = 0;
+
+  constructor() {
+    effect(() => {
+      const revision = this.revision();
+      if (revision > this.lastRevision) {
+        this.lastRevision = revision;
+        this.assessmentMutationId.set(createClientMutationId("op"));
+        this.clarificationMutationId.set(createClientMutationId("cl"));
+      }
+    });
+  }
   readonly clarificationVisible = signal(false);
   readonly selectedClause = computed(() => {
     const key = this.selectedTreeKey();
@@ -199,7 +228,8 @@ export class ClausesPage {
   submitAssessment(): void {
     const response = this.selectedResponse();
     const clause = this.selectedClause();
-    if (!response || !clause || this.assessmentForm.invalid) {
+    const draft = this.draftVersion();
+    if (!response || !clause || !draft || this.assessmentForm.invalid) {
       this.assessmentForm.markAllAsTouched();
       return;
     }
@@ -207,6 +237,8 @@ export class ClausesPage {
       return;
     }
     const value = this.assessmentForm.getRawValue();
+    // 保留当前幂等键：网络失败重试时服务端识别为同一条意见，只入库一次。
+    const clientMutationId = this.assessmentMutationId();
     this.store.dispatch(
       ReviewActions.submitAssessment({
         input: {
@@ -216,6 +248,8 @@ export class ClausesPage {
           comment: value.comment,
           reviewer: roleProfiles[this.role()].name,
           role: this.role(),
+          baseVersionId: draft.id,
+          clientMutationId,
         },
       }),
     );
@@ -231,7 +265,8 @@ export class ClausesPage {
 
   submitClarification(): void {
     const response = this.selectedResponse();
-    if (!response || this.clarificationForm.invalid) {
+    const draft = this.draftVersion();
+    if (!response || !draft || this.clarificationForm.invalid) {
       this.clarificationForm.markAllAsTouched();
       return;
     }
@@ -243,6 +278,8 @@ export class ClausesPage {
           requestText: value.requestText,
           dueAt: value.dueAt.toISOString(),
           actor: roleProfiles[this.role()].name,
+          baseVersionId: draft.id,
+          clientMutationId: this.clarificationMutationId(),
         },
       }),
     );

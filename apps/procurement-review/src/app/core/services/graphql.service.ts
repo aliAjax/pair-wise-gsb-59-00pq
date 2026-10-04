@@ -1,6 +1,7 @@
 import { Injectable, inject } from "@angular/core";
 import { Apollo, gql } from "apollo-angular";
-import { Observable, map } from "rxjs";
+import { Observable, defer, of, retryWhen, throwError } from "rxjs";
+import { map, mergeMap, take } from "rxjs/operators";
 import type {
   AssessmentInput,
   Clarification,
@@ -11,6 +12,7 @@ import type {
   ReviewerOpinion,
   WorkspaceQueryResult,
 } from "../models/review.models";
+import { isVersionConflictError } from "../state/review.utils";
 
 const WORKSPACE_QUERY = gql`
   query ProcurementReviewWorkspace {
@@ -42,6 +44,7 @@ const WORKSPACE_QUERY = gql`
           reviews {
             id
             responseId
+            versionId
             reviewer
             role
             decision
@@ -53,6 +56,7 @@ const WORKSPACE_QUERY = gql`
             id
             responseId
             clauseId
+            versionId
             round
             requestText
             supplierResponse
@@ -74,6 +78,16 @@ const WORKSPACE_QUERY = gql`
         clauseCount
         responseCount
         contentHash
+        snapshot {
+          contentHash
+          opinionCount
+          clarificationCount
+          responses {
+            responseId
+            opinionCount
+            clarificationCount
+          }
+        }
       }
       auditLogs {
         id
@@ -87,6 +101,7 @@ const WORKSPACE_QUERY = gql`
         totalClauses
         mandatoryCount
         pendingReviews
+        opinionCount
         differences
         overdueClarifications
         reusedProofs
@@ -96,6 +111,7 @@ const WORKSPACE_QUERY = gql`
         id
         name
       }
+      revision
     }
   }
 `;
@@ -105,6 +121,7 @@ const SUBMIT_ASSESSMENT = gql`
     submitAssessment(input: $input) {
       id
       responseId
+      versionId
       reviewer
       role
       decision
@@ -121,6 +138,7 @@ const REQUEST_CLARIFICATION = gql`
       id
       responseId
       clauseId
+      versionId
       round
       requestText
       supplierResponse
@@ -138,6 +156,7 @@ const RESPOND_CLARIFICATION = gql`
       id
       responseId
       clauseId
+      versionId
       round
       requestText
       supplierResponse
@@ -162,6 +181,11 @@ const FINALIZE_VERSION = gql`
       clauseCount
       responseCount
       contentHash
+      snapshot {
+        contentHash
+        opinionCount
+        clarificationCount
+      }
     }
   }
 `;
@@ -171,6 +195,34 @@ const RESET_REVIEW_DATA = gql`
     resetReviewData
   }
 `;
+
+/**
+ * 只有网络/传输类失败才用同一 clientMutationId 重试一次；
+ * 业务校验失败和版本冲突绝不重试。服务端按幂等键去重，保证只入库一次。
+ */
+const retryTransportOnce = <T>(source: Observable<T>): Observable<T> =>
+  defer(() => {
+    let attempts = 0;
+    return source.pipe(
+      retryWhen((errors) =>
+        errors.pipe(
+          mergeMap((error: unknown) => {
+            attempts += 1;
+            const networkOnly =
+              !isVersionConflictError(error) &&
+              !(
+                error as { graphQLErrors?: unknown[] } | null
+              )?.graphQLErrors?.length;
+            if (attempts === 1 && networkOnly) {
+              return of(null);
+            }
+            return throwError(() => error);
+          }),
+          take(2),
+        ),
+      ),
+    );
+  });
 
 @Injectable({ providedIn: "root" })
 export class ReviewGraphqlService {
@@ -193,80 +245,83 @@ export class ReviewGraphqlService {
   }
 
   submitAssessment(input: AssessmentInput): Observable<ReviewerOpinion> {
-    return this.apollo
-      .mutate<{ submitAssessment: ReviewerOpinion }>({
-        mutation: SUBMIT_ASSESSMENT,
-        variables: { input },
-        refetchQueries: ["ProcurementReviewWorkspace"],
-      })
-      .pipe(
-        map((result) => {
-          if (!result.data) {
-            throw new Error("GraphQL 未返回评审意见。");
-          }
-          return result.data.submitAssessment;
-        }),
-      );
+    return retryTransportOnce(
+      this.apollo
+        .mutate<{ submitAssessment: ReviewerOpinion }>({
+          mutation: SUBMIT_ASSESSMENT,
+          variables: { input },
+        })
+        .pipe(
+          map((result) => {
+            if (!result.data) {
+              throw new Error("GraphQL 未返回评审意见。");
+            }
+            return result.data.submitAssessment;
+          }),
+        ),
+    );
   }
 
   requestClarification(input: ClarificationInput): Observable<Clarification> {
-    return this.apollo
-      .mutate<{ requestClarification: Clarification }>({
-        mutation: REQUEST_CLARIFICATION,
-        variables: { input },
-        refetchQueries: ["ProcurementReviewWorkspace"],
-      })
-      .pipe(
-        map((result) => {
-          if (!result.data) {
-            throw new Error("GraphQL 未返回澄清记录。");
-          }
-          return result.data.requestClarification;
-        }),
-      );
+    return retryTransportOnce(
+      this.apollo
+        .mutate<{ requestClarification: Clarification }>({
+          mutation: REQUEST_CLARIFICATION,
+          variables: { input },
+        })
+        .pipe(
+          map((result) => {
+            if (!result.data) {
+              throw new Error("GraphQL 未返回澄清记录。");
+            }
+            return result.data.requestClarification;
+          }),
+        ),
+    );
   }
 
   respondClarification(
     input: ClarificationResponseInput,
   ): Observable<Clarification> {
-    return this.apollo
-      .mutate<{ respondClarification: Clarification }>({
-        mutation: RESPOND_CLARIFICATION,
-        variables: { input },
-        refetchQueries: ["ProcurementReviewWorkspace"],
-      })
-      .pipe(
-        map((result) => {
-          if (!result.data) {
-            throw new Error("GraphQL 未返回澄清回复。");
-          }
-          return result.data.respondClarification;
-        }),
-      );
+    return retryTransportOnce(
+      this.apollo
+        .mutate<{ respondClarification: Clarification }>({
+          mutation: RESPOND_CLARIFICATION,
+          variables: { input },
+        })
+        .pipe(
+          map((result) => {
+            if (!result.data) {
+              throw new Error("GraphQL 未返回澄清回复。");
+            }
+            return result.data.respondClarification;
+          }),
+        ),
+    );
   }
 
   finalizeVersion(input: FinalizeVersionInput): Observable<ReviewVersion> {
-    return this.apollo
-      .mutate<{ finalizeVersion: ReviewVersion }>({
-        mutation: FINALIZE_VERSION,
-        variables: { input },
-        refetchQueries: ["ProcurementReviewWorkspace"],
-      })
-      .pipe(
-        map((result) => {
-          if (!result.data) {
-            throw new Error("GraphQL 未返回版本信息。");
-          }
-          return result.data.finalizeVersion;
-        }),
-      );
+    return retryTransportOnce(
+      this.apollo
+        .mutate<{ finalizeVersion: ReviewVersion }>({
+          mutation: FINALIZE_VERSION,
+          variables: { input },
+        })
+        .pipe(
+          map((result) => {
+            if (!result.data) {
+              throw new Error("GraphQL 未返回版本信息。");
+            }
+            return result.data.finalizeVersion;
+          }),
+        ),
+    );
   }
 
   resetReviewData(): Observable<boolean> {
     return this.apollo
       .mutate<{ resetReviewData: boolean }>({
         mutation: RESET_REVIEW_DATA,
-        refetchQueries: ["ProcurementReviewWorkspace"],
       })
       .pipe(
         map((result) => {

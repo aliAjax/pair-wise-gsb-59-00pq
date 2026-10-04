@@ -14,6 +14,10 @@
     />
   </header>
 
+  @if (!draftVersion()) {
+    <p class="empty-copy">当前没有可编辑草稿，所有版本均已定稿，请等待新一轮工作版本创建。</p>
+  }
+
   <div class="version-summary">
     <article>
       <span>版本总数</span>
@@ -22,6 +26,10 @@
     <article>
       <span>已定稿版本</span>
       <strong>{{ finalizedCount() }}</strong>
+    </article>
+    <article>
+      <span>定稿锁定意见</span>
+      <strong>{{ lockedOpinionCount() }}</strong>
     </article>
     <article>
       <span>待小组复核分歧</span>
@@ -48,6 +56,7 @@
             <th>名称</th>
             <th>状态</th>
             <th>响应项</th>
+            <th>快照意见 / 澄清</th>
             <th>内容哈希</th>
             <th>创建信息</th>
           </tr>
@@ -69,7 +78,16 @@
                 {{ version.clauseCount }} 条条款
               </div>
             </td>
-            <td class="mono">{{ version.contentHash }}</td>
+            <td>
+              @if (version.status === "finalized") {
+                {{ snapshotCounts(version).opinionCount }} /
+                {{ snapshotCounts(version).clarificationCount }}
+                <div class="table-secondary">定稿时锁定，不再变化</div>
+              } @else {
+                <span class="table-secondary">草稿实时统计</span>
+              }
+            </td>
+            <td class="mono">{{ version.contentHash || "待定稿生成" }}</td>
             <td>
               {{ version.createdBy }}
               <div class="table-secondary">
@@ -194,7 +212,8 @@
       />
     </div>
     <div class="finalize-note">
-      定稿前系统会检查未完成澄清。定稿后当前版本会生成内容哈希并锁定签署人。
+      定稿前系统会检查当前草稿下的未完成澄清；定稿时按服务端此刻数据一次性锁定
+      内容哈希、独立意见和澄清计数，之后补充的意见自动归属新草稿，不会改写本版本。
     </div>
     <div class="inline-actions dialog-actions">
       <p-button

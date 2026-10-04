@@ -49,6 +49,7 @@ export const typeDefs = parse(`
   type ReviewerOpinion {
     id: ID!
     responseId: String!
+    versionId: ID!
     reviewer: String!
     role: ReviewRole!
     decision: ComplianceStatus!
@@ -61,6 +62,7 @@ export const typeDefs = parse(`
     id: ID!
     responseId: String!
     clauseId: String!
+    versionId: ID!
     round: Int!
     requestText: String!
     supplierResponse: String
@@ -87,6 +89,19 @@ export const typeDefs = parse(`
     clarifications: [Clarification!]!
   }
 
+  type VersionResponseCount {
+    responseId: ID!
+    opinionCount: Int!
+    clarificationCount: Int!
+  }
+
+  type VersionSnapshot {
+    contentHash: String!
+    opinionCount: Int!
+    clarificationCount: Int!
+    responses: [VersionResponseCount!]!
+  }
+
   type ReviewVersion {
     id: ID!
     version: String!
@@ -98,6 +113,7 @@ export const typeDefs = parse(`
     clauseCount: Int!
     responseCount: Int!
     contentHash: String!
+    snapshot: VersionSnapshot
   }
 
   type AuditLog {
@@ -113,6 +129,7 @@ export const typeDefs = parse(`
     totalClauses: Int!
     mandatoryCount: Int!
     pendingReviews: Int!
+    opinionCount: Int!
     differences: Int!
     overdueClarifications: Int!
     reusedProofs: Int!
@@ -130,6 +147,7 @@ export const typeDefs = parse(`
     auditLogs: [AuditLog!]!
     dashboard: DashboardStats!
     suppliers: [Supplier!]!
+    revision: Int!
   }
 
   input AssessmentInput {
@@ -139,6 +157,8 @@ export const typeDefs = parse(`
     comment: String!
     reviewer: String!
     role: ReviewRole!
+    baseVersionId: ID!
+    clientMutationId: ID!
   }
 
   input ClarificationInput {
@@ -146,18 +166,24 @@ export const typeDefs = parse(`
     requestText: String!
     dueAt: String!
     actor: String!
+    baseVersionId: ID!
+    clientMutationId: ID!
   }
 
   input ClarificationResponseInput {
     clarificationId: ID!
     responseText: String!
     actor: String!
+    baseVersionId: ID!
+    clientMutationId: ID!
   }
 
   input FinalizeVersionInput {
     label: String!
     actor: String!
     role: ReviewRole!
+    baseVersionId: ID!
+    clientMutationId: ID!
   }
 
   type Query {

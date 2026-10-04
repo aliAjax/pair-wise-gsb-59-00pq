@@ -15,8 +15,10 @@ export const initialReviewState: ReviewState = {
   },
   role: "reviewer_a",
   selectedSupplierIds: ["SUP-A", "SUP-B", "SUP-C"],
+  revision: 0,
   loading: false,
   saving: false,
+  versionConflict: false,
 };
 
 export const reviewReducer = createReducer(
@@ -28,21 +30,36 @@ export const reviewReducer = createReducer(
   })),
   on(
     ReviewActions.loadReviewDataSuccess,
-    (state, { workspace, toast }) => ({
+    (state, { workspace, toast, expectedRevision }) => {
+      // 并发提交后各自触发刷新：只接受不旧于本地修订号的快照，
+      // 避免后到达的旧响应覆盖新数据，保证概览/比对/导出计数一致。
+      if (
+        typeof expectedRevision === "number" &&
+        workspace.revision < state.revision
+      ) {
+        return state;
+      }
+      return {
+        ...state,
+        ...workspace,
+        loading: false,
+        saving: false,
+        error: undefined,
+        versionConflict: false,
+        toast,
+      };
+    },
+  ),
+  on(
+    ReviewActions.loadReviewDataFailure,
+    (state, { error, versionConflict }) => ({
       ...state,
-      ...workspace,
       loading: false,
       saving: false,
-      error: undefined,
-      toast,
+      error,
+      versionConflict: Boolean(versionConflict),
     }),
   ),
-  on(ReviewActions.loadReviewDataFailure, (state, { error }) => ({
-    ...state,
-    loading: false,
-    saving: false,
-    error,
-  })),
   on(ReviewActions.setRole, (state, { role }) => ({
     ...state,
     role,
@@ -69,6 +86,7 @@ export const reviewReducer = createReducer(
     ...state,
     toast: undefined,
     error: undefined,
+    versionConflict: false,
   })),
   on(
     ReviewActions.submitAssessment,
@@ -80,6 +98,7 @@ export const reviewReducer = createReducer(
       ...state,
       saving: true,
       error: undefined,
+      versionConflict: false,
       toast: undefined,
     }),
   ),

@@ -8,6 +8,11 @@
     </div>
     <div class="inline-actions">
       <p-button
+        label="当前版本意见 {{ opinionCount() }} 条"
+        icon="pi pi-comments"
+        [outlined]="true"
+      />
+      <p-button
         label="评分差异 {{ differenceCount() }} 项"
         icon="pi pi-exclamation-circle"
         severity="warn"

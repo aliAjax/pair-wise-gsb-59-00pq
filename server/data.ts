@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { GraphQLError } from "graphql";
 import type {
   AuditLog,
   Clarification,
@@ -7,9 +8,12 @@ import type {
   ComplianceStatus,
   ReviewDatabase,
   ReviewRole,
+  ReviewVersion,
   ReviewerOpinion,
   SupplierResponse,
 } from "./types";
+
+export const VERSION_CONFLICT_CODE = "REVIEW_VERSION_CONFLICT";
 
 const clauses: Clause[] = [
   {
@@ -282,11 +286,12 @@ const reviewFactories: Array<{
   },
 ];
 
-const clarifications: Clarification[] = [
+const clarificationFactories: Clarification[] = [
   {
     id: "CL-001",
     responseId: "C002-SUP-A",
     clauseId: "C002",
+    versionId: "",
     round: 1,
     requestText: "补充安全负责人近五年的同类项目合同页或验收证明。",
     requestedAt: "2026-09-27T09:00:00+08:00",
@@ -297,6 +302,7 @@ const clarifications: Clarification[] = [
     id: "CL-002",
     responseId: "C008-SUP-B",
     clauseId: "C008",
+    versionId: "",
     round: 1,
     requestText: "提供等保测评结论页及有效期说明。",
     requestedAt: "2026-09-28T14:30:00+08:00",
@@ -307,6 +313,7 @@ const clarifications: Clarification[] = [
     id: "CL-003",
     responseId: "C009-SUP-C",
     clauseId: "C009",
+    versionId: "",
     round: 2,
     requestText: "补充重大漏洞四小时通报的流程截图。",
     supplierResponse: "已补充值班表、升级路径和平台告警截图。",
@@ -321,6 +328,7 @@ const makeResponse = (
   clause: Clause,
   supplierIndex: number,
   clauseIndex: number,
+  draftVersionId: string,
 ): SupplierResponse => {
   const supplier = suppliers[supplierIndex];
   const id = `${clause.id}-${supplier.id}`;
@@ -358,41 +366,47 @@ const makeResponse = (
     .map((item, index) => ({
       id: `OP-${id}-${index + 1}`,
       ...item,
-    }));
-  base.clarifications = clarifications.filter((item) => item.responseId === id);
+      versionId: draftVersionId,
+    })) as ReviewerOpinion[];
+  base.clarifications = clarificationFactories
+    .filter((item) => item.responseId === id)
+    .map((item) => ({ ...item, versionId: draftVersionId }));
   return base;
 };
 
-const responses: SupplierResponse[] = clauses.flatMap((clause, clauseIndex) =>
-  suppliers.map((_supplier, supplierIndex) =>
-    makeResponse(clause, supplierIndex, clauseIndex),
-  ),
-);
+const DRAFT_VERSION_ID = "VER-002";
 
-const versions = [
+const makeVersions = (responseCount: number): ReviewVersion[] => [
   {
     id: "VER-001",
     version: "V1",
     label: "初审问题定位版本",
-    status: "finalized" as const,
+    status: "finalized",
     createdAt: "2026-09-25T17:30:00+08:00",
     createdBy: "采购工作组",
     signedBy: ["采购负责人", "技术评审组长"],
     clauseCount: clauses.length,
-    responseCount: responses.length,
+    responseCount,
     contentHash: "a84f2d17",
+    snapshot: {
+      contentHash: "a84f2d17",
+      opinionCount: 0,
+      clarificationCount: 0,
+      responses: [],
+    },
   },
   {
-    id: "VER-002",
+    id: DRAFT_VERSION_ID,
     version: "V2",
     label: "澄清与评分复核工作版",
-    status: "draft" as const,
+    status: "draft",
     createdAt: "2026-09-29T08:10:00+08:00",
     createdBy: "采购工作组",
     signedBy: [],
     clauseCount: clauses.length,
-    responseCount: responses.length,
-    contentHash: "d91c6b42",
+    responseCount,
+    contentHash: "",
+    snapshot: null,
   },
 ];
 
@@ -431,24 +445,107 @@ const auditLogs: AuditLog[] = [
   },
 ];
 
-const buildSeed = (): ReviewDatabase => ({
-  clauses: structuredClone(clauses),
-  responses: structuredClone(responses),
-  versions: structuredClone(versions),
-  auditLogs: structuredClone(auditLogs),
-  suppliers: structuredClone(suppliers),
-});
+const buildSeed = (): ReviewDatabase => {
+  const builtResponses = clauses.flatMap((clause, clauseIndex) =>
+    suppliers.map((_supplier, supplierIndex) =>
+      makeResponse(clause, supplierIndex, clauseIndex, DRAFT_VERSION_ID),
+    ),
+  );
+  return {
+    clauses: structuredClone(clauses),
+    responses: builtResponses,
+    versions: makeVersions(builtResponses.length),
+    auditLogs: structuredClone(auditLogs),
+    suppliers: structuredClone(suppliers),
+    revision: 1,
+    processedMutations: [],
+  };
+};
+
+/**
+ * 旧数据没有版本归属：把没有 versionId 的意见和澄清迁移到当前草稿，
+ * 补齐快照、revision 和幂等记录字段，保证历史 runtime-data 也能被正确读取。
+ * 返回是否发生迁移，调用方据此把结果落盘。
+ */
+const migrate = (database: ReviewDatabase): boolean => {
+  let changed = false;
+  const draft = database.versions.find((version) => version.status === "draft");
+  if (!draft) {
+    return false;
+  }
+  database.responses.forEach((response) => {
+    response.reviews.forEach((opinion) => {
+      if (!opinion.versionId) {
+        opinion.versionId = draft.id;
+        changed = true;
+      }
+    });
+    response.clarifications.forEach((clarification) => {
+      if (!clarification.versionId) {
+        clarification.versionId = draft.id;
+        changed = true;
+      }
+    });
+  });
+  database.versions.forEach((version) => {
+    if (version.status === "finalized" && !version.snapshot) {
+      version.snapshot = {
+        contentHash: version.contentHash,
+        opinionCount: 0,
+        clarificationCount: 0,
+        responses: [],
+      };
+      changed = true;
+    }
+    if (version.status === "draft" && version.snapshot !== null) {
+      version.snapshot = null;
+      changed = true;
+    }
+  });
+  if (typeof database.revision !== "number") {
+    database.revision = 1;
+    changed = true;
+  }
+  if (!Array.isArray(database.processedMutations)) {
+    database.processedMutations = [];
+    changed = true;
+  }
+  if (changed) {
+    database.revision += 1;
+  }
+  return changed;
+};
+
+/** 客户端基于旧版本数据提交时抛出，前端收到此错误后必须重新载入。 */
+export class ReviewVersionConflictError extends GraphQLError {
+  constructor(message: string) {
+    super(message, { extensions: { code: VERSION_CONFLICT_CODE } });
+    this.name = "ReviewVersionConflictError";
+  }
+}
 
 class ReviewDataStore {
   private readonly runtimePath = join(process.cwd(), "server", "runtime-data.json");
   private data: ReviewDatabase;
+  /** 所有 mutation 串行排队，评审员同时提交时后一个读到的是前一个提交后的服务端数据。 */
+  private chain: Promise<unknown> = Promise.resolve();
 
   constructor() {
     if (existsSync(this.runtimePath)) {
       try {
-        this.data = JSON.parse(
+        const loaded = JSON.parse(
           readFileSync(this.runtimePath, "utf8"),
         ) as ReviewDatabase;
+        const migrated = migrate(loaded);
+        this.data = loaded;
+        if (migrated) {
+          // 迁移结果立即落盘，避免旧归属缺失在每次重启时重复处理。
+          writeFileSync(
+            this.runtimePath,
+            JSON.stringify(this.data, null, 2),
+            "utf8",
+          );
+        }
       } catch {
         this.data = buildSeed();
       }
@@ -461,10 +558,53 @@ class ReviewDataStore {
     return structuredClone(this.data);
   }
 
-  mutate<T>(work: (database: ReviewDatabase) => T): T {
-    const result = work(this.data);
-    writeFileSync(this.runtimePath, JSON.stringify(this.data, null, 2), "utf8");
-    return result;
+  currentDraft(): ReviewVersion {
+    const draft = this.data.versions.find((version) => version.status === "draft");
+    if (!draft) {
+      throw new ReviewVersionConflictError(
+        "当前评审版本已定稿，请重新载入评审数据后在新草稿中操作。",
+      );
+    }
+    return draft;
+  }
+
+  /**
+   * 以串行事务方式修改数据。同一 clientMutationId 的重试不再执行 work，
+   * 而是通过 findReplay 取回首次入库的实体，保证同一意见只入库一次。
+   * 返回值同时带服务端 revision，供前端丢弃过期刷新。
+   */
+  mutate<T>(
+    clientMutationId: string,
+    work: (database: ReviewDatabase) => T,
+    findReplay?: (database: ReviewDatabase) => T,
+  ): Promise<{ result: T; revision: number; replayed: boolean }> {
+    const run = this.chain.then(() => {
+      if (clientMutationId && this.data.processedMutations.includes(clientMutationId)) {
+        if (!findReplay) {
+          throw new Error("重复提交缺少幂等回放查询。");
+        }
+        return {
+          result: findReplay(this.data),
+          revision: this.data.revision,
+          replayed: true as const,
+        };
+      }
+      const result = work(this.data);
+      this.data.revision += 1;
+      if (clientMutationId) {
+        this.data.processedMutations.push(clientMutationId);
+        if (this.data.processedMutations.length > 200) {
+          this.data.processedMutations = this.data.processedMutations.slice(-200);
+        }
+      }
+      writeFileSync(this.runtimePath, JSON.stringify(this.data, null, 2), "utf8");
+      return { result, revision: this.data.revision, replayed: false as const };
+    });
+    this.chain = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
   }
 
   reset(): ReviewDatabase {
@@ -498,3 +638,6 @@ export const createOpinionId = (): string =>
 
 export const createClarificationId = (): string =>
   `CL-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+
+export const createVersionId = (): string =>
+  `VER-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;

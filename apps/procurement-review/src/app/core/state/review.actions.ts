@@ -12,15 +12,25 @@ import type {
 export const ReviewActions = createActionGroup({
   source: "Procurement Review",
   events: {
-    "Load Review Data": emptyProps(),
+    "Load Review Data": props<{ force?: boolean }>(),
     "Load Review Data Success": props<{
       workspace: Pick<
         ReviewState,
-        "clauses" | "versions" | "auditLogs" | "dashboard" | "suppliers"
+        | "clauses"
+        | "versions"
+        | "auditLogs"
+        | "dashboard"
+        | "suppliers"
+        | "revision"
       >;
       toast?: string;
+      /** 由 mutation 触发的刷新使用服务端修订号，reducer 据此丢弃过期结果。 */
+      expectedRevision?: number;
     }>(),
-    "Load Review Data Failure": props<{ error: string }>(),
+    "Load Review Data Failure": props<{
+      error: string;
+      versionConflict?: boolean;
+    }>(),
     "Set Role": props<{ role: ReviewRole }>(),
     "Set Filters": props<{ filters: Partial<ClauseFilters> }>(),
     "Toggle Supplier": props<{ supplierId: string }>(),

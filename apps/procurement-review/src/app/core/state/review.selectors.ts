@@ -4,6 +4,7 @@ import type {
   ClauseTreeNode,
   ComplianceStatus,
   ReviewState,
+  ReviewVersion,
   SupplierResponse,
 } from "../models/review.models";
 
@@ -18,6 +19,23 @@ export const selectClauses = createSelector(
 export const selectVersions = createSelector(
   selectReviewState,
   (state) => state.versions,
+);
+
+/** 当前可编辑的草稿版本；提交时以此版本作为 baseVersionId。 */
+export const selectDraftVersion = createSelector(
+  selectVersions,
+  (versions): ReviewVersion | undefined =>
+    versions.find((version) => version.status === "draft"),
+);
+
+export const selectRevision = createSelector(
+  selectReviewState,
+  (state) => state.revision,
+);
+
+export const selectVersionConflict = createSelector(
+  selectReviewState,
+  (state) => state.versionConflict,
 );
 
 export const selectAuditLogs = createSelector(

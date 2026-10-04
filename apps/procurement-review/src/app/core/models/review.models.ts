@@ -15,6 +15,7 @@ export type VersionStatus = "draft" | "finalized";
 export interface ReviewerOpinion {
   id: string;
   responseId: string;
+  versionId: string;
   reviewer: string;
   role: ReviewRole;
   decision: ComplianceStatus;
@@ -27,6 +28,7 @@ export interface Clarification {
   id: string;
   responseId: string;
   clauseId: string;
+  versionId: string;
   round: number;
   requestText: string;
   supplierResponse?: string;
@@ -72,6 +74,19 @@ export interface ClauseTreeNode extends Clause {
   children: ClauseTreeNode[];
 }
 
+export interface VersionResponseCount {
+  responseId: string;
+  opinionCount: number;
+  clarificationCount: number;
+}
+
+export interface VersionSnapshot {
+  contentHash: string;
+  opinionCount: number;
+  clarificationCount: number;
+  responses: VersionResponseCount[];
+}
+
 export interface ReviewVersion {
   id: string;
   version: string;
@@ -83,6 +98,7 @@ export interface ReviewVersion {
   clauseCount: number;
   responseCount: number;
   contentHash: string;
+  snapshot: VersionSnapshot | null;
 }
 
 export interface AuditLog {
@@ -98,6 +114,7 @@ export interface DashboardStats {
   totalClauses: number;
   mandatoryCount: number;
   pendingReviews: number;
+  opinionCount: number;
   differences: number;
   overdueClarifications: number;
   reusedProofs: number;
@@ -125,9 +142,13 @@ export interface ReviewState {
   filters: ClauseFilters;
   role: ReviewRole;
   selectedSupplierIds: string[];
+  /** 服务端单调递增的修订号，用于丢弃过期的工作区刷新。 */
+  revision: number;
   loading: boolean;
   saving: boolean;
   error?: string;
+  /** 版本冲突标记：提示用户重新载入，且本次提交未改变服务端数据。 */
+  versionConflict: boolean;
   toast?: string;
 }
 
@@ -138,6 +159,7 @@ export interface WorkspaceQueryResult {
     auditLogs: AuditLog[];
     dashboard: DashboardStats;
     suppliers: Supplier[];
+    revision: number;
   };
 }
 
@@ -148,6 +170,8 @@ export interface AssessmentInput {
   comment: string;
   reviewer: string;
   role: ReviewRole;
+  baseVersionId: string;
+  clientMutationId: string;
 }
 
 export interface ClarificationInput {
@@ -155,18 +179,24 @@ export interface ClarificationInput {
   requestText: string;
   dueAt: string;
   actor: string;
+  baseVersionId: string;
+  clientMutationId: string;
 }
 
 export interface ClarificationResponseInput {
   clarificationId: string;
   responseText: string;
   actor: string;
+  baseVersionId: string;
+  clientMutationId: string;
 }
 
 export interface FinalizeVersionInput {
   label: string;
   actor: string;
   role: ReviewRole;
+  baseVersionId: string;
+  clientMutationId: string;
 }
 
 export const roleProfiles: Record<ReviewRole, { name: string; label: string }> = {

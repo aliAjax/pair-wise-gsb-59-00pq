@@ -25,6 +25,7 @@ import {
   selectSelectedSupplierIds,
   selectSuppliers,
 } from "../../core/state/review.selectors";
+import { countDraftOpinions } from "../../core/state/review.utils";
 import {
   ClauseTypeTagComponent,
   StatusTagComponent,
@@ -109,6 +110,8 @@ export class ComparisonPage {
         hasReviewDifference,
       ).length,
   );
+  /** 当前草稿独立意见总数，与概览、版本历史、导出口径一致。 */
+  readonly opinionCount = computed(() => countDraftOpinions(this.clauses()));
   readonly reusedProofCount = computed(
     () =>
       Array.from(this.proofCounts().values()).filter((count) => count > 1)

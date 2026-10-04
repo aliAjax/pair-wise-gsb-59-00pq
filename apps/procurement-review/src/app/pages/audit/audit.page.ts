@@ -10,9 +10,14 @@ import { TableModule } from "primeng/table";
 import { ReviewActions } from "../../core/state/review.actions";
 import {
   selectAuditLogs,
+  selectClauses,
   selectRole,
   selectVersions,
 } from "../../core/state/review.selectors";
+import {
+  countDraftOpinions,
+  snapshotCounts,
+} from "../../core/state/review.utils";
 import { roleProfiles } from "../../core/models/review.models";
 
 @Component({
@@ -37,6 +42,9 @@ export class AuditPage {
     initialValue: [],
   });
   readonly versions = toSignal(this.store.select(selectVersions), {
+    initialValue: [],
+  });
+  readonly clauses = toSignal(this.store.select(selectClauses), {
     initialValue: [],
   });
   readonly role = toSignal(this.store.select(selectRole), {
@@ -69,6 +77,16 @@ export class AuditPage {
   );
   readonly finalizedCount = computed(
     () => this.versions().filter((version) => version.status === "finalized").length,
+  );
+  /** 当前草稿独立意见数，与概览、批量比对读到的计数保持一致。 */
+  readonly draftOpinionCount = computed(() =>
+    countDraftOpinions(this.clauses()),
+  );
+  /** 已定稿版本锁定快照中的独立意见总数，定稿后补意见不会改变此数。 */
+  readonly lockedOpinionCount = computed(() =>
+    this.versions()
+      .filter((version) => version.status === "finalized")
+      .reduce((total, version) => total + snapshotCounts(version).opinionCount, 0),
   );
 
   exportJson(): void {

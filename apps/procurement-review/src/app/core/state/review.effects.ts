@@ -1,20 +1,52 @@
 import { Injectable, inject } from "@angular/core";
 import { Actions, createEffect, ofType } from "@ngrx/effects";
-import { catchError, map, of, switchMap } from "rxjs";
+import type { Action } from "@ngrx/store";
+import { Observable, of } from "rxjs";
+import { catchError, map, switchMap } from "rxjs/operators";
 import { ReviewGraphqlService } from "../services/graphql.service";
 import { ReviewActions } from "./review.actions";
-
-const errorMessage = (error: unknown): string => {
-  if (error instanceof Error) {
-    return error.message;
-  }
-  return "GraphQL 请求失败，请检查本地 mock server。";
-};
+import { errorMessage, isVersionConflictError } from "./review.utils";
 
 @Injectable()
 export class ReviewEffects {
   private readonly actions$ = inject(Actions);
   private readonly graphql = inject(ReviewGraphqlService);
+
+  /**
+   * mutation 成功后以服务端最新数据重新载入；提交本身带 baseVersionId 与
+   * clientMutationId，旧版本提交会在服务端被拒绝（版本冲突），传输失败
+   * 则由 GraphQL 层用同一幂等键重试，保证同一条意见只入库一次。
+   */
+  private runMutation<T>(
+    mutation$: Observable<T>,
+    toast: string,
+  ): Observable<Action> {
+    return mutation$.pipe(
+      switchMap(() => this.graphql.loadWorkspace()),
+      map(({ workspace }) =>
+        ReviewActions.loadReviewDataSuccess({
+          workspace,
+          toast,
+          expectedRevision: workspace.revision,
+        }),
+      ),
+      catchError((error: unknown) =>
+        isVersionConflictError(error)
+          ? of(
+              ReviewActions.loadReviewDataFailure({
+                error: `${errorMessage(error)}（本地内容未覆盖，已保留您原意见）`,
+                versionConflict: true,
+              }),
+              ReviewActions.loadReviewData({ force: true }),
+            )
+          : of(
+              ReviewActions.loadReviewDataFailure({
+                error: errorMessage(error),
+              }),
+            ),
+      ),
+    );
+  }
 
   loadReviewData$ = createEffect(() =>
     this.actions$.pipe(
@@ -40,21 +72,9 @@ export class ReviewEffects {
     this.actions$.pipe(
       ofType(ReviewActions.submitAssessment),
       switchMap(({ input }) =>
-        this.graphql.submitAssessment(input).pipe(
-          switchMap(() => this.graphql.loadWorkspace()),
-          map(({ workspace }) =>
-            ReviewActions.loadReviewDataSuccess({
-              workspace,
-              toast: "评审意见已提交，其他评审员意见保持不变。",
-            }),
-          ),
-          catchError((error: unknown) =>
-            of(
-              ReviewActions.loadReviewDataFailure({
-                error: errorMessage(error),
-              }),
-            ),
-          ),
+        this.runMutation(
+          this.graphql.submitAssessment(input),
+          "评审意见已提交，其他评审员意见保持不变。",
         ),
       ),
     ),
@@ -64,21 +84,9 @@ export class ReviewEffects {
     this.actions$.pipe(
       ofType(ReviewActions.requestClarification),
       switchMap(({ input }) =>
-        this.graphql.requestClarification(input).pipe(
-          switchMap(() => this.graphql.loadWorkspace()),
-          map(({ workspace }) =>
-            ReviewActions.loadReviewDataSuccess({
-              workspace,
-              toast: "澄清要求已发出，并写入审计日志。",
-            }),
-          ),
-          catchError((error: unknown) =>
-            of(
-              ReviewActions.loadReviewDataFailure({
-                error: errorMessage(error),
-              }),
-            ),
-          ),
+        this.runMutation(
+          this.graphql.requestClarification(input),
+          "澄清要求已发出，并写入审计日志。",
         ),
       ),
     ),
@@ -88,21 +96,9 @@ export class ReviewEffects {
     this.actions$.pipe(
       ofType(ReviewActions.respondClarification),
       switchMap(({ input }) =>
-        this.graphql.respondClarification(input).pipe(
-          switchMap(() => this.graphql.loadWorkspace()),
-          map(({ workspace }) =>
-            ReviewActions.loadReviewDataSuccess({
-              workspace,
-              toast: "澄清回复已登记，等待评审员复核。",
-            }),
-          ),
-          catchError((error: unknown) =>
-            of(
-              ReviewActions.loadReviewDataFailure({
-                error: errorMessage(error),
-              }),
-            ),
-          ),
+        this.runMutation(
+          this.graphql.respondClarification(input),
+          "澄清回复已登记，等待评审员复核。",
         ),
       ),
     ),
@@ -112,21 +108,9 @@ export class ReviewEffects {
     this.actions$.pipe(
       ofType(ReviewActions.finalizeVersion),
       switchMap(({ input }) =>
-        this.graphql.finalizeVersion(input).pipe(
-          switchMap(() => this.graphql.loadWorkspace()),
-          map(({ workspace }) =>
-            ReviewActions.loadReviewDataSuccess({
-              workspace,
-              toast: "评审版本已汇总签字并锁定。",
-            }),
-          ),
-          catchError((error: unknown) =>
-            of(
-              ReviewActions.loadReviewDataFailure({
-                error: errorMessage(error),
-              }),
-            ),
-          ),
+        this.runMutation(
+          this.graphql.finalizeVersion(input),
+          "评审版本已按服务端此刻数据锁定快照并完成签字。",
         ),
       ),
     ),
@@ -137,13 +121,7 @@ export class ReviewEffects {
       ofType(ReviewActions.resetReviewData),
       switchMap(() =>
         this.graphql.resetReviewData().pipe(
-          switchMap(() => this.graphql.loadWorkspace()),
-          map(({ workspace }) =>
-            ReviewActions.loadReviewDataSuccess({
-              workspace,
-              toast: "评审演示数据已恢复。",
-            }),
-          ),
+          map(() => ReviewActions.loadReviewData({ force: true })),
           catchError((error: unknown) =>
             of(
               ReviewActions.loadReviewDataFailure({
