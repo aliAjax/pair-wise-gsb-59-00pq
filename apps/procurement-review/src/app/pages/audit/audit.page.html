@@ -72,6 +72,18 @@
           appendTo="body"
         />
       </div>
+      <div class="field">
+        <label for="audit-version">版本范围</label>
+        <p-select
+          inputId="audit-version"
+          [options]="versionFilterOptions"
+          optionLabel="label"
+          optionValue="value"
+          [ngModel]="versionFilter()"
+          (ngModelChange)="versionFilter.set($event)"
+          appendTo="body"
+        />
+      </div>
       <div class="export-role">
         <span>导出角色</span>
         <strong>{{ role() }} · {{ roleProfiles[role()].name }}</strong>
@@ -98,6 +110,7 @@
           <th>操作人</th>
           <th>动作</th>
           <th>对象</th>
+          <th>归属版本</th>
           <th>详情</th>
         </tr>
       </ng-template>
@@ -109,12 +122,13 @@
             <span class="table-primary">{{ log.action }}</span>
           </td>
           <td class="mono">{{ log.entity }}</td>
+          <td>{{ versionLabelFor(log) }}</td>
           <td>{{ log.detail }}</td>
         </tr>
       </ng-template>
       <ng-template pTemplate="emptymessage">
         <tr>
-          <td colspan="5">没有符合条件的审计事件。</td>
+          <td colspan="6">没有符合条件的审计事件。</td>
         </tr>
       </ng-template>
     </p-table>

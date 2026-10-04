@@ -2,10 +2,12 @@ import { createFeatureSelector, createSelector } from "@ngrx/store";
 import type {
   Clause,
   ClauseTreeNode,
-  ComplianceStatus,
   ReviewState,
+  ReviewVersion,
   SupplierResponse,
+  VersionedResponseView,
 } from "../models/review.models";
+import { versionedResponse } from "../models/review.models";
 
 export const selectReviewState =
   createFeatureSelector<ReviewState>("review");
@@ -18,6 +20,24 @@ export const selectClauses = createSelector(
 export const selectVersions = createSelector(
   selectReviewState,
   (state) => state.versions,
+);
+
+/** 当前工作草稿：所有新提交、澄清和统计都以它为准。 */
+export const selectDraftVersion = createSelector(
+  selectVersions,
+  (versions): ReviewVersion | undefined =>
+    versions.find((version) => version.status === "draft"),
+);
+
+/**
+ * 当前活动版本 ID：优先草稿，定稿后自动指向新草稿。
+ * 所有意见、澄清和计数的归属口径都来自这里。
+ */
+export const selectActiveVersionId = createSelector(
+  selectDraftVersion,
+  selectVersions,
+  (draft, versions): string =>
+    draft?.id ?? versions.find((version) => version.status === "finalized")?.id ?? "",
 );
 
 export const selectAuditLogs = createSelector(
@@ -70,9 +90,15 @@ export const selectToast = createSelector(
   (state) => state.toast,
 );
 
-export const hasReviewDifference = (response: SupplierResponse): boolean => {
+export const hasReviewDifference = (
+  response: SupplierResponse,
+  versionId?: string,
+): boolean => {
+  const reviews = versionId
+    ? response.reviews.filter((review) => review.versionId === versionId)
+    : response.reviews;
   const decisions = new Set(
-    response.reviews
+    reviews
       .filter((review) => review.decision !== "clarification")
       .map((review) => review.decision),
   );
@@ -85,10 +111,18 @@ export const findResponse = (
 ): SupplierResponse | undefined =>
   clause.responses.find((response) => response.supplierId === supplierId);
 
+/** 按当前版本生成响应视图，概览、比对、复核共用同一口径。 */
+export const scopedResponses = (
+  responses: SupplierResponse[],
+  versionId: string,
+): VersionedResponseView[] =>
+  responses.map((response) => versionedResponse(response, versionId));
+
 const filteredClauses = createSelector(
   selectClauses,
   selectFilters,
-  (clauses, filters) => {
+  selectActiveVersionId,
+  (clauses, filters, activeVersionId) => {
     const keyword = filters.keyword.trim().toLowerCase();
     return clauses.filter((clause) => {
       const matchesKeyword =
@@ -109,7 +143,9 @@ const filteredClauses = createSelector(
         filters.type === "all" || clause.type === filters.type;
       const matchesDifference =
         !filters.differencesOnly ||
-        clause.responses.some(hasReviewDifference);
+        clause.responses.some((response) =>
+          hasReviewDifference(response, activeVersionId),
+        );
       return (
         matchesKeyword &&
         matchesCategory &&
@@ -164,32 +200,56 @@ export const selectClauseTree = createSelector(
 
 export const selectDifferences = createSelector(
   selectClauses,
-  (clauses) =>
+  selectActiveVersionId,
+  (clauses, activeVersionId) =>
     clauses.flatMap((clause) =>
       clause.responses
-        .filter(hasReviewDifference)
-        .map((response) => ({ clause, response })),
+        .filter((response) => hasReviewDifference(response, activeVersionId))
+        .map((response) => ({
+          clause,
+          response: versionedResponse(response, activeVersionId),
+        })),
     ),
 );
 
 export const selectPendingClarifications = createSelector(
   selectClauses,
-  (clauses) =>
+  selectActiveVersionId,
+  (clauses, activeVersionId) =>
     clauses.flatMap((clause) =>
       clause.responses.flatMap((response) =>
-        response.clarifications
-          .filter(
+        versionedResponse(response, activeVersionId)
+          .scopedClarifications.filter(
             (clarification) =>
               clarification.status === "open" ||
               clarification.status === "overdue",
           )
           .map((clarification) => ({
             clause,
-            response,
+            response: versionedResponse(response, activeVersionId),
             clarification,
           })),
       ),
     ),
+);
+
+/** 当前版本下存在否决项结论缺口（无意见或仍有进行中澄清）的响应。 */
+export const selectMandatoryGaps = createSelector(
+  selectClauses,
+  selectActiveVersionId,
+  (clauses, activeVersionId) =>
+    clauses
+      .filter((clause) => clause.type === "mandatory")
+      .flatMap((clause) =>
+        clause.responses
+          .map((response) => versionedResponse(response, activeVersionId))
+          .filter(
+            (view) =>
+              view.derivedStatus === "pending" ||
+              view.derivedStatus === "clarification",
+          )
+          .map((response) => ({ clause, response })),
+      ),
 );
 
 export const selectReusedProofs = createSelector(
@@ -214,5 +274,13 @@ export const selectReusedProofs = createSelector(
 
 export const responseDecisionSummary = (
   response: SupplierResponse,
-): ComplianceStatus[] =>
-  Array.from(new Set(response.reviews.map((review) => review.decision)));
+  versionId?: string,
+): string[] =>
+  Array.from(
+    new Set(
+      (versionId
+        ? response.reviews.filter((review) => review.versionId === versionId)
+        : response.reviews
+      ).map((review) => review.decision),
+    ),
+  );

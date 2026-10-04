@@ -3,7 +3,7 @@
     <div>
       <h2>评审版本与小组复核</h2>
       <p>
-        保留每位评审员的独立意见；分歧进入小组复核，已定稿版本不可覆盖。
+        保留每位评审员的独立意见；分歧进入小组复核，定稿按服务端此刻数据锁定快照，已定稿版本不可覆盖。
       </p>
     </div>
     <p-button
@@ -22,6 +22,10 @@
     <article>
       <span>已定稿版本</span>
       <strong>{{ finalizedCount() }}</strong>
+    </article>
+    <article>
+      <span>当前草稿独立意见</span>
+      <strong>{{ draftStats()?.opinionCount ?? 0 }}</strong>
     </article>
     <article>
       <span>待小组复核分歧</span>
@@ -48,6 +52,8 @@
             <th>名称</th>
             <th>状态</th>
             <th>响应项</th>
+            <th>独立意见 / 澄清</th>
+            <th>分歧 / 未完成澄清</th>
             <th>内容哈希</th>
             <th>创建信息</th>
           </tr>
@@ -66,10 +72,22 @@
             <td>
               {{ version.responseCount }} 项
               <div class="table-secondary">
-                {{ version.clauseCount }} 条条款
+                {{ version.clauseCount }} 条条款 · 已评审 {{ version.reviewedResponseCount }} 项
               </div>
             </td>
-            <td class="mono">{{ version.contentHash }}</td>
+            <td>
+              {{ version.opinionCount }} 条意见
+              <div class="table-secondary">{{ version.clarificationCount }} 项澄清</div>
+            </td>
+            <td>
+              {{ version.differenceCount }} 项分歧
+              <div class="table-secondary">
+                {{ version.pendingClarificationCount }} 项未完成澄清
+              </div>
+            </td>
+            <td class="mono">
+              {{ version.contentHash || "定稿后生成" }}
+            </td>
             <td>
               {{ version.createdBy }}
               <div class="table-secondary">
@@ -155,7 +173,7 @@
           </td>
           <td>
             <div class="opinion-grid">
-              @for (review of item.response.reviews; track review.id) {
+              @for (review of item.response.scopedReviews; track review.id) {
                 <div>
                   <strong>{{ review.reviewer }}</strong>
                   <app-status-tag [status]="review.decision" />
@@ -166,8 +184,8 @@
             </div>
           </td>
           <td>
-            {{ item.response.reviews[0]?.score ?? 0 }} -
-            {{ item.response.reviews[item.response.reviews.length - 1]?.score ?? 0 }}
+            {{ item.response.scopedReviews[0]?.score ?? 0 }} -
+            {{ item.response.scopedReviews[item.response.scopedReviews.length - 1]?.score ?? 0 }}
           </td>
           <td>{{ item.response.attachmentName }}</td>
         </tr>
@@ -194,7 +212,7 @@
       />
     </div>
     <div class="finalize-note">
-      定稿前系统会检查未完成澄清。定稿后当前版本会生成内容哈希并锁定签署人。
+      定稿只检查未完成澄清，随后按服务端此刻数据冻结独立意见、澄清和分歧计数并生成内容哈希；定稿后新意见自动进入下一工作版。
     </div>
     <div class="inline-actions dialog-actions">
       <p-button
@@ -208,6 +226,7 @@
         label="签字并锁定"
         icon="pi pi-lock"
         [disabled]="finalizeForm.invalid"
+        [loading]="saving()"
       />
     </div>
   </form>
@@ -250,6 +269,7 @@
         label="保存回复"
         icon="pi pi-check"
         [disabled]="responseForm.invalid"
+        [loading]="saving()"
       />
     </div>
   </form>

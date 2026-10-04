@@ -61,7 +61,7 @@
         <div class="data-panel-header">
           <div>
             <h3>评审覆盖进度</h3>
-            <p>按每一条供应商响应是否已有独立意见计算</p>
+            <p>按每一条供应商响应在当前工作版是否已有独立意见计算</p>
           </div>
           <strong>{{ completion() }}%</strong>
         </div>
@@ -106,7 +106,7 @@
                 <div class="table-secondary">{{ item.clause.title }}</div>
               </td>
               <td>{{ item.response.supplierName }}</td>
-              <td><app-status-tag [status]="item.response.status" /></td>
+              <td><app-status-tag [status]="item.response.derivedStatus" /></td>
             </tr>
           </ng-template>
           <ng-template pTemplate="emptymessage">
@@ -151,7 +151,7 @@
               <td>{{ item.response.supplierName }}</td>
               <td>
                 <div class="tag-row">
-                  @for (review of item.response.reviews; track review.id) {
+                  @for (review of item.response.scopedReviews; track review.id) {
                     <span class="review-score">
                       {{ review.reviewer }} · {{ review.score }} 分
                     </span>

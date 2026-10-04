@@ -7,9 +7,9 @@ import type {
   ComplianceStatus,
   ReviewDatabase,
   ReviewRole,
-  ReviewerOpinion,
   SupplierResponse,
 } from "./types";
+import { migrateLegacyData } from "./versioning";
 
 const clauses: Clause[] = [
   {
@@ -217,6 +217,8 @@ const responseOverrides: Record<
   },
 };
 
+const DRAFT_VERSION_ID = "VER-002";
+
 const reviewFactories: Array<{
   responseId: string;
   reviewer: string;
@@ -292,6 +294,7 @@ const clarifications: Clarification[] = [
     requestedAt: "2026-09-27T09:00:00+08:00",
     dueAt: "2026-09-28T18:00:00+08:00",
     status: "overdue",
+    versionId: DRAFT_VERSION_ID,
   },
   {
     id: "CL-002",
@@ -302,6 +305,7 @@ const clarifications: Clarification[] = [
     requestedAt: "2026-09-28T14:30:00+08:00",
     dueAt: "2026-10-02T18:00:00+08:00",
     status: "open",
+    versionId: DRAFT_VERSION_ID,
   },
   {
     id: "CL-003",
@@ -314,6 +318,7 @@ const clarifications: Clarification[] = [
     dueAt: "2026-09-28T18:00:00+08:00",
     respondedAt: "2026-09-27T14:20:00+08:00",
     status: "responded",
+    versionId: DRAFT_VERSION_ID,
   },
 ];
 
@@ -357,6 +362,7 @@ const makeResponse = (
     .filter((item) => item.responseId === id)
     .map((item, index) => ({
       id: `OP-${id}-${index + 1}`,
+      versionId: DRAFT_VERSION_ID,
       ...item,
     }));
   base.clarifications = clarifications.filter((item) => item.responseId === id);
@@ -380,6 +386,12 @@ const versions = [
     signedBy: ["采购负责人", "技术评审组长"],
     clauseCount: clauses.length,
     responseCount: responses.length,
+    opinionCount: 0,
+    clarificationCount: 0,
+    pendingClarificationCount: 0,
+    differenceCount: 0,
+    reviewedResponseCount: 0,
+    revision: 1,
     contentHash: "a84f2d17",
   },
   {
@@ -392,7 +404,49 @@ const versions = [
     signedBy: [],
     clauseCount: clauses.length,
     responseCount: responses.length,
-    contentHash: "d91c6b42",
+    opinionCount: responses.reduce(
+      (count, response) =>
+        count +
+        response.reviews.filter((review) => review.versionId === DRAFT_VERSION_ID)
+          .length,
+      0,
+    ),
+    clarificationCount: responses.reduce(
+      (count, response) =>
+        count +
+        response.clarifications.filter(
+          (clarification) => clarification.versionId === DRAFT_VERSION_ID,
+        ).length,
+      0,
+    ),
+    pendingClarificationCount: responses.filter((response) =>
+      response.clarifications.some(
+        (clarification) =>
+          clarification.versionId === DRAFT_VERSION_ID &&
+          (clarification.status === "open" ||
+            clarification.status === "overdue"),
+      ),
+    ).length,
+    differenceCount: responses.filter((response) => {
+      const decisions = new Set(
+        response.reviews
+          .filter(
+            (review) =>
+              review.versionId === DRAFT_VERSION_ID &&
+              review.decision !== "clarification",
+          )
+          .map((review) => review.decision),
+      );
+      return decisions.size > 1;
+    }).length,
+    reviewedResponseCount: responses.filter(
+      (response) =>
+        response.reviews.some(
+          (review) => review.versionId === DRAFT_VERSION_ID,
+        ),
+    ).length,
+    revision: 1,
+    contentHash: "",
   },
 ];
 
@@ -404,6 +458,7 @@ const auditLogs: AuditLog[] = [
     action: "版本定稿",
     entity: "VER-001",
     detail: "初审问题定位版本签署锁定，共覆盖 11 条技术条款。",
+    versionId: "VER-001",
   },
   {
     id: "AUD-002",
@@ -412,6 +467,7 @@ const auditLogs: AuditLog[] = [
     action: "发起澄清",
     entity: "CL-001",
     detail: "要求华云数科补充关键人员项目经历证明。",
+    versionId: DRAFT_VERSION_ID,
   },
   {
     id: "AUD-003",
@@ -420,6 +476,7 @@ const auditLogs: AuditLog[] = [
     action: "提交独立意见",
     entity: "C002-SUP-A",
     detail: "建议待澄清，与陈评审的符合结论形成分歧。",
+    versionId: DRAFT_VERSION_ID,
   },
   {
     id: "AUD-004",
@@ -428,6 +485,7 @@ const auditLogs: AuditLog[] = [
     action: "创建工作版本",
     entity: "VER-002",
     detail: "创建 V2 工作版本，保留 V1 定稿快照。",
+    versionId: DRAFT_VERSION_ID,
   },
 ];
 
@@ -442,6 +500,7 @@ const buildSeed = (): ReviewDatabase => ({
 class ReviewDataStore {
   private readonly runtimePath = join(process.cwd(), "server", "runtime-data.json");
   private data: ReviewDatabase;
+  private mutationChain: Promise<unknown> = Promise.resolve();
 
   constructor() {
     if (existsSync(this.runtimePath)) {
@@ -455,21 +514,42 @@ class ReviewDataStore {
     } else {
       this.data = buildSeed();
     }
+    // 旧数据先迁移到当前草稿，再对外提供服务。
+    migrateLegacyData(this.data);
+    this.persist();
+  }
+
+  private persist(): void {
+    writeFileSync(
+      this.runtimePath,
+      JSON.stringify(this.data, null, 2),
+      "utf8",
+    );
   }
 
   snapshot(): ReviewDatabase {
     return structuredClone(this.data);
   }
 
-  mutate<T>(work: (database: ReviewDatabase) => T): T {
-    const result = work(this.data);
-    writeFileSync(this.runtimePath, JSON.stringify(this.data, null, 2), "utf8");
-    return result;
+  /** 变更串行执行，两个评审员同时提交也按到达顺序依次校验 revision。 */
+  mutate<T>(work: (database: ReviewDatabase) => T): Promise<T> {
+    const run = this.mutationChain.then(() => {
+      const result = work(this.data);
+      this.persist();
+      return result;
+    });
+    // 让链路在业务报错后仍可继续承接后续 mutation。
+    this.mutationChain = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
   }
 
   reset(): ReviewDatabase {
     this.data = buildSeed();
-    writeFileSync(this.runtimePath, JSON.stringify(this.data, null, 2), "utf8");
+    migrateLegacyData(this.data);
+    this.persist();
     return this.snapshot();
   }
 }
@@ -482,6 +562,7 @@ export const createAudit = (
   action: string,
   entity: string,
   detail: string,
+  versionId?: string,
 ): void => {
   database.auditLogs.unshift({
     id: `AUD-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
@@ -490,6 +571,7 @@ export const createAudit = (
     action,
     entity,
     detail,
+    versionId,
   });
 };
 

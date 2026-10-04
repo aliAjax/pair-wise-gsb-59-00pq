@@ -85,55 +85,56 @@
 
         <section class="response-tabs">
           @for (response of clause.responses; track response.id) {
+            @let view = scopedView(response);
             <button
               type="button"
               [class.active]="selectedResponse()?.id === response.id"
               (click)="selectResponse(response)"
             >
               <span>{{ response.supplierName }}</span>
-              <app-status-tag [status]="response.status" />
+              <app-status-tag [status]="view.derivedStatus" />
             </button>
           }
         </section>
 
-        @if (selectedResponse(); as response) {
+        @if (selectedResponse(); as view) {
           <div class="response-grid">
             <section class="data-panel response-content">
               <div class="data-panel-header">
                 <div>
-                  <h3>{{ response.supplierName }} 响应</h3>
+                  <h3>{{ view.supplierName }} 响应</h3>
                   <p>
-                    提交人 {{ response.submittedBy }} ·
-                    {{ response.submittedAt | date: "yyyy-MM-dd HH:mm" }}
+                    提交人 {{ view.submittedBy }} ·
+                    {{ view.submittedAt | date: "yyyy-MM-dd HH:mm" }}
                   </p>
                 </div>
-                <app-status-tag [status]="response.status" />
+                <app-status-tag [status]="view.derivedStatus" />
               </div>
               <div class="data-panel-body">
-                <p class="response-text">{{ response.responseText }}</p>
+                <p class="response-text">{{ view.responseText }}</p>
                 <dl class="response-meta">
                   <div>
                     <dt>声明评分</dt>
-                    <dd>{{ response.claimedScore }} 分</dd>
+                    <dd>{{ view.claimedScore }} 分</dd>
                   </div>
                   <div>
                     <dt>证明文件</dt>
-                    <dd>{{ response.attachmentName }}</dd>
+                    <dd>{{ view.attachmentName }}</dd>
                   </div>
                   <div>
                     <dt>证明指纹</dt>
-                    <dd class="mono">{{ response.proofFingerprint }}</dd>
+                    <dd class="mono">{{ view.proofFingerprint }}</dd>
                   </div>
                   <div>
                     <dt>评审轮次</dt>
-                    <dd>第 {{ response.reviewRound }} 轮</dd>
+                    <dd>第 {{ view.reviewRound }} 轮</dd>
                   </div>
                 </dl>
 
-                <h4>独立评审意见</h4>
-                @if (response.reviews.length) {
+                <h4>独立评审意见（当前工作版）</h4>
+                @if (view.scopedReviews.length) {
                   <div class="opinion-list">
-                    @for (review of response.reviews; track review.id) {
+                    @for (review of view.scopedReviews; track review.id) {
                       <article>
                         <header>
                           <strong>{{ review.reviewer }}</strong>
@@ -148,14 +149,14 @@
                     }
                   </div>
                 } @else {
-                  <p class="muted">尚无独立评审意见。</p>
+                  <p class="muted">当前工作版本尚无独立评审意见。</p>
                 }
 
-                <h4>澄清记录</h4>
-                @if (response.clarifications.length) {
+                <h4>澄清记录（当前工作版）</h4>
+                @if (view.scopedClarifications.length) {
                   <div class="clarification-list">
                     @for (
-                      clarification of response.clarifications;
+                      clarification of view.scopedClarifications;
                       track clarification.id
                     ) {
                       <article>
@@ -199,6 +200,11 @@
                 @if (!canReview()) {
                   <div class="permission-note">
                     采购人员可维护条款和发起澄清，不能代替评审员提交符合性结论。
+                  </div>
+                }
+                @if (!draftVersion()) {
+                  <div class="permission-note">
+                    当前没有可提交的工作草稿，请等待新版本建立后刷新页面。
                   </div>
                 }
                 <div class="field">
@@ -251,7 +257,7 @@
                   label="提交独立意见"
                   icon="pi pi-check"
                   [disabled]="!canReview()"
-                  [loading]="false"
+                  [loading]="saving()"
                   styleClass="full-button"
                 />
               </form>
@@ -310,6 +316,7 @@
         label="发出澄清"
         icon="pi pi-send"
         [disabled]="clarificationForm.invalid"
+        [loading]="saving()"
       />
     </div>
   </form>

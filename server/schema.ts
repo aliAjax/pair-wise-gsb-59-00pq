@@ -55,6 +55,7 @@ export const typeDefs = parse(`
     score: Int!
     comment: String!
     createdAt: String!
+    versionId: String!
   }
 
   type Clarification {
@@ -68,6 +69,7 @@ export const typeDefs = parse(`
     dueAt: String!
     respondedAt: String
     status: ClarificationStatus!
+    versionId: String!
   }
 
   type SupplierResponse {
@@ -97,6 +99,12 @@ export const typeDefs = parse(`
     signedBy: [String!]!
     clauseCount: Int!
     responseCount: Int!
+    opinionCount: Int!
+    clarificationCount: Int!
+    pendingClarificationCount: Int!
+    differenceCount: Int!
+    reviewedResponseCount: Int!
+    revision: Int!
     contentHash: String!
   }
 
@@ -107,6 +115,7 @@ export const typeDefs = parse(`
     action: String!
     entity: String!
     detail: String!
+    versionId: String
   }
 
   type DashboardStats {
@@ -117,6 +126,10 @@ export const typeDefs = parse(`
     overdueClarifications: Int!
     reusedProofs: Int!
     activeVersion: String!
+    activeVersionId: String!
+    activeVersionRevision: Int!
+    opinionCount: Int!
+    clarificationCount: Int!
   }
 
   type Supplier {
@@ -139,6 +152,9 @@ export const typeDefs = parse(`
     comment: String!
     reviewer: String!
     role: ReviewRole!
+    clientToken: String!
+    versionId: ID!
+    expectedRevision: Int!
   }
 
   input ClarificationInput {
@@ -146,18 +162,26 @@ export const typeDefs = parse(`
     requestText: String!
     dueAt: String!
     actor: String!
+    clientToken: String!
+    versionId: ID!
+    expectedRevision: Int!
   }
 
   input ClarificationResponseInput {
     clarificationId: ID!
     responseText: String!
     actor: String!
+    clientToken: String!
+    versionId: ID!
+    expectedRevision: Int!
   }
 
   input FinalizeVersionInput {
     label: String!
     actor: String!
     role: ReviewRole!
+    versionId: ID!
+    expectedRevision: Int!
   }
 
   type Query {

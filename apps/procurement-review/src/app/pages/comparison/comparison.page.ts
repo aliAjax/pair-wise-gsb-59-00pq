@@ -12,6 +12,7 @@ import { TagModule } from "primeng/tag";
 import { InputTextModule } from "primeng/inputtext";
 import {
   clauseTypeLabels,
+  versionedResponse,
   type Clause,
   type ClauseType,
   type SupplierResponse,
@@ -19,6 +20,7 @@ import {
 import { ReviewActions } from "../../core/state/review.actions";
 import {
   hasReviewDifference,
+  selectActiveVersionId,
   selectClauses,
   selectFilteredClauses,
   selectFilters,
@@ -74,6 +76,10 @@ export class ComparisonPage {
     this.store.select(selectSelectedSupplierIds),
     { initialValue: [] },
   );
+  readonly activeVersionId = toSignal(
+    this.store.select(selectActiveVersionId),
+    { initialValue: "" },
+  );
   readonly visibleSuppliers = computed(() =>
     this.suppliers().filter((supplier) =>
       this.selectedSupplierIds().includes(supplier.id),
@@ -103,17 +109,31 @@ export class ComparisonPage {
     );
     return counts;
   });
-  readonly differenceCount = computed(
-    () =>
-      this.clauses().flatMap((clause) => clause.responses).filter(
-        hasReviewDifference,
-      ).length,
-  );
+  /** 与概览、版本快照同一口径：只统计当前工作版归属的意见。 */
+  readonly differenceCount = computed(() => {
+    const versionId = this.activeVersionId();
+    return this.clauses()
+      .flatMap((clause) => clause.responses)
+      .filter((response) => hasReviewDifference(response, versionId))
+      .length;
+  });
   readonly reusedProofCount = computed(
     () =>
       Array.from(this.proofCounts().values()).filter((count) => count > 1)
         .length,
   );
+  readonly opinionCount = computed(() => {
+    const versionId = this.activeVersionId();
+    return this.clauses()
+      .flatMap((clause) => clause.responses)
+      .reduce(
+        (count, response) =>
+          count +
+          response.reviews.filter((review) => review.versionId === versionId)
+            .length,
+        0,
+      );
+  });
 
   updateFilter(partial: {
     keyword?: string;
@@ -142,8 +162,30 @@ export class ComparisonPage {
     return clause.responses.find((response) => response.supplierId === supplierId);
   }
 
+  scopedStatus(response: SupplierResponse | undefined) {
+    if (!response) {
+      return "pending" as const;
+    }
+    return versionedResponse(response, this.activeVersionId()).derivedStatus;
+  }
+
+  scopedReviewCount(response: SupplierResponse | undefined): number {
+    if (!response) {
+      return 0;
+    }
+    return versionedResponse(response, this.activeVersionId())
+      .scopedReviews.length;
+  }
+
   hasDifference(response: SupplierResponse | undefined): boolean {
-    return response ? hasReviewDifference(response) : false;
+    return response
+      ? hasReviewDifference(response, this.activeVersionId())
+      : false;
+  }
+
+  /** 模板使用：条款下任一供应商响应在当前版本存在意见分歧。 */
+  clauseHasDifference(clause: Clause): boolean {
+    return clause.responses.some((response) => this.hasDifference(response));
   }
 
   isReusedProof(response: SupplierResponse | undefined): boolean {

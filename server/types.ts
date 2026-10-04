@@ -34,6 +34,10 @@ export interface ReviewerOpinion {
   score: number;
   comment: string;
   createdAt: string;
+  /** 该意见归属的评审版本；定稿后历史版本的意见保持只读快照。 */
+  versionId: string;
+  /** 客户端幂等键，网络重试只入库一次。 */
+  clientToken?: string;
 }
 
 export interface Clarification {
@@ -47,6 +51,12 @@ export interface Clarification {
   dueAt: string;
   respondedAt?: string;
   status: ClarificationStatus;
+  /** 澄清发起时归属的评审版本。 */
+  versionId: string;
+  /** 发起澄清的客户端幂等键。 */
+  clientToken?: string;
+  /** 登记回复的客户端幂等键。 */
+  responseToken?: string;
 }
 
 export interface SupplierResponse {
@@ -76,6 +86,19 @@ export interface ReviewVersion {
   signedBy: string[];
   clauseCount: number;
   responseCount: number;
+  /** 快照锁定时刻归属本版本的独立意见数。 */
+  opinionCount: number;
+  /** 快照锁定时刻归属本版本的澄清记录数。 */
+  clarificationCount: number;
+  /** 快照锁定时刻仍有未完成澄清的响应数。 */
+  pendingClarificationCount: number;
+  /** 快照锁定时刻独立意见存在分歧的响应数。 */
+  differenceCount: number;
+  /** 快照锁定时刻至少有一条独立意见的响应数。 */
+  reviewedResponseCount: number;
+  /** 草稿的乐观并发修订号；每次提交递增，定稿后冻结。 */
+  revision: number;
+  /** 草稿期间为空字符串，定稿时按服务端此刻数据计算。 */
   contentHash: string;
 }
 
@@ -86,6 +109,8 @@ export interface AuditLog {
   action: string;
   entity: string;
   detail: string;
+  /** 操作发生时归属的评审版本；旧数据迁移后标记为未归属。 */
+  versionId?: string;
 }
 
 export interface DashboardStats {
@@ -96,6 +121,10 @@ export interface DashboardStats {
   overdueClarifications: number;
   reusedProofs: number;
   activeVersion: string;
+  activeVersionId: string;
+  activeVersionRevision: number;
+  opinionCount: number;
+  clarificationCount: number;
 }
 
 export interface ReviewDatabase {
@@ -113,6 +142,12 @@ export interface AssessmentInput {
   comment: string;
   reviewer: string;
   role: ReviewRole;
+  /** 客户端生成的幂等键，失败重试保持不变。 */
+  clientToken: string;
+  /** 提交时所依据的草稿版本 ID，旧版本提交返回冲突。 */
+  versionId: string;
+  /** 载入草稿时的修订号，服务端不匹配则返回冲突。 */
+  expectedRevision: number;
 }
 
 export interface ClarificationInput {
@@ -120,16 +155,24 @@ export interface ClarificationInput {
   requestText: string;
   dueAt: string;
   actor: string;
+  clientToken: string;
+  versionId: string;
+  expectedRevision: number;
 }
 
 export interface ClarificationResponseInput {
   clarificationId: string;
   responseText: string;
   actor: string;
+  clientToken: string;
+  versionId: string;
+  expectedRevision: number;
 }
 
 export interface FinalizeVersionInput {
   label: string;
   actor: string;
   role: ReviewRole;
+  versionId: string;
+  expectedRevision: number;
 }

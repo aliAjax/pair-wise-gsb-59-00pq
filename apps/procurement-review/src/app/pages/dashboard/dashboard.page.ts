@@ -8,17 +8,20 @@ import { ProgressBarModule } from "primeng/progressbar";
 import { TableModule } from "primeng/table";
 import { TagModule } from "primeng/tag";
 import {
+  versionedResponse,
   type Clause,
   type Clarification,
-  type SupplierResponse,
+  type VersionedResponseView,
 } from "../../core/models/review.models";
 import {
-  hasReviewDifference,
+  selectActiveVersionId,
   selectAuditLogs,
   selectClauses,
   selectDashboard,
+  selectDraftVersion,
   selectError,
   selectLoading,
+  selectMandatoryGaps,
   selectPendingClarifications,
   selectRole,
   selectVersions,
@@ -30,8 +33,18 @@ import {
 
 interface PendingIssue {
   clause: Clause;
-  response: SupplierResponse;
+  response: VersionedResponseView;
   clarification: Clarification;
+}
+
+interface MandatoryGap {
+  clause: Clause;
+  response: VersionedResponseView;
+}
+
+interface DifferenceItem {
+  clause: Clause;
+  response: VersionedResponseView;
 }
 
 @Component({
@@ -62,6 +75,13 @@ export class DashboardPage {
   readonly versions = toSignal(this.store.select(selectVersions), {
     initialValue: [],
   });
+  readonly draftVersion = toSignal(this.store.select(selectDraftVersion), {
+    initialValue: undefined,
+  });
+  readonly activeVersionId = toSignal(
+    this.store.select(selectActiveVersionId),
+    { initialValue: "" },
+  );
   readonly auditLogs = toSignal(this.store.select(selectAuditLogs), {
     initialValue: [],
   });
@@ -78,34 +98,41 @@ export class DashboardPage {
     this.store.select(selectPendingClarifications),
     { initialValue: [] as PendingIssue[] },
   );
-  readonly differences = computed(() =>
-    this.clauses().flatMap((clause) =>
+  /** 与服务端快照同一口径：分歧只统计当前版本归属的意见。 */
+  readonly differences = computed<DifferenceItem[]>(() => {
+    const versionId = this.activeVersionId();
+    return this.clauses().flatMap((clause) =>
       clause.responses
-        .filter(hasReviewDifference)
+        .map((response) => versionedResponse(response, versionId))
+        .filter((view) => {
+          const decisions = new Set(
+            view.scopedReviews
+              .filter((review) => review.decision !== "clarification")
+              .map((review) => review.decision),
+          );
+          return decisions.size > 1;
+        })
         .map((response) => ({ clause, response })),
-    ),
+    );
+  });
+  readonly mandatoryGaps = toSignal(
+    this.store.select(selectMandatoryGaps),
+    { initialValue: [] as MandatoryGap[] },
   );
-  readonly mandatoryGaps = computed(() =>
-    this.clauses()
-      .filter((clause) => clause.type === "mandatory")
-      .flatMap((clause) =>
-        clause.responses
-          .filter(
-            (response) =>
-              response.status === "pending" ||
-              response.status === "clarification",
-          )
-          .map((response) => ({ clause, response })),
-      ),
-  );
+  /** 当前版本覆盖进度：以“响应项”为粒度，与服务端 pendingReviews 对齐。 */
   readonly completion = computed(() => {
-    const clauses = this.clauses();
-    if (clauses.length === 0) {
+    const stats = this.dashboard();
+    if (!stats || stats.totalClauses === 0) {
       return 0;
     }
-    const reviewed = clauses.filter((clause) =>
-      clause.responses.every((response) => response.reviews.length > 0),
-    ).length;
-    return Math.round((reviewed / clauses.length) * 100);
+    const totalResponses = this.clauses().reduce(
+      (count, clause) => count + clause.responses.length,
+      0,
+    );
+    if (totalResponses === 0) {
+      return 0;
+    }
+    const reviewed = totalResponses - stats.pendingReviews;
+    return Math.round((reviewed / totalResponses) * 100);
   });
 }

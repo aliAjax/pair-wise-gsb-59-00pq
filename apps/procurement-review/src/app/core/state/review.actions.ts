@@ -9,6 +9,8 @@ import type {
   ReviewState,
 } from "../models/review.models";
 
+export const VERSION_CONFLICT_MESSAGE = "VERSION_CONFLICT";
+
 export const ReviewActions = createActionGroup({
   source: "Procurement Review",
   events: {

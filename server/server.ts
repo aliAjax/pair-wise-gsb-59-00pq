@@ -16,17 +16,35 @@ import type {
   FinalizeVersionInput,
   ReviewDatabase,
   ReviewRole,
+  ReviewVersion,
 } from "./types";
+import {
+  VersionConflictError,
+  computeVersionStats,
+  createDraftVersion,
+  decorateVersion,
+  deriveResponseStatus,
+  findActiveVersion,
+  hashSnapshot,
+  isClarificationBlocking,
+  requireOpenDraft,
+  versionClarifications,
+} from "./versioning";
 
 const getDashboard = (database: ReviewDatabase): DashboardStats => {
-  const opinionsByResponse = database.responses.map((response) => {
-    const decisions = new Set(
-      response.reviews
-        .filter((review) => review.decision !== "clarification")
-        .map((review) => review.decision),
-    );
-    return decisions.size > 1;
-  });
+  const activeVersion = findActiveVersion(database);
+  const stats = activeVersion
+    ? computeVersionStats(database, activeVersion.id)
+    : {
+        clauseCount: database.clauses.length,
+        responseCount: database.responses.length,
+        opinionCount: 0,
+        clarificationCount: 0,
+        pendingClarificationCount: 0,
+        differenceCount: 0,
+        reviewedResponseCount: 0,
+      };
+
   const proofCounts = database.responses.reduce<Record<string, number>>(
     (counts, response) => {
       if (response.proofFingerprint) {
@@ -37,32 +55,28 @@ const getDashboard = (database: ReviewDatabase): DashboardStats => {
     },
     {},
   );
-  const activeVersion =
-    database.versions.find((version) => version.status === "draft") ??
-    database.versions[0];
 
   return {
-    totalClauses: database.clauses.length,
+    totalClauses: stats.clauseCount,
     mandatoryCount: database.clauses.filter(
       (clause) => clause.type === "mandatory",
     ).length,
-    pendingReviews: database.responses.filter(
-      (response) => response.reviews.length < 2,
-    ).length,
-    differences: opinionsByResponse.filter(Boolean).length,
-    overdueClarifications: database.responses.reduce(
-      (count, response) =>
-        count +
-        response.clarifications.filter(
+    pendingReviews: stats.responseCount - stats.reviewedResponseCount,
+    differences: stats.differenceCount,
+    overdueClarifications: activeVersion
+      ? versionClarifications(database, activeVersion.id).filter(
           (clarification) => clarification.status === "overdue",
-        ).length,
-      0,
-    ),
+        ).length
+      : 0,
     reusedProofs: Object.values(proofCounts).filter((count) => count > 1)
       .length,
     activeVersion: activeVersion
       ? `${activeVersion.version} ${activeVersion.label}`
       : "未建立版本",
+    activeVersionId: activeVersion?.id ?? "",
+    activeVersionRevision: activeVersion?.revision ?? 0,
+    opinionCount: stats.opinionCount,
+    clarificationCount: stats.clarificationCount,
   };
 };
 
@@ -72,25 +86,65 @@ const requireRole = (role: ReviewRole, allowed: ReviewRole[]): void => {
   }
 };
 
+const requireClientToken = (token: string): void => {
+  if (!token || token.trim().length < 8) {
+    throw new Error("缺少有效的幂等标识，请重新载入页面后重试。");
+  }
+};
+
+const findOpinionByToken = (
+  database: ReviewDatabase,
+  clientToken: string,
+) =>
+  database.responses
+    .flatMap((response) => response.reviews)
+    .find((review) => review.clientToken === clientToken);
+
+const findClarificationByRequestToken = (
+  database: ReviewDatabase,
+  clientToken: string,
+) =>
+  database.responses
+    .flatMap((response) => response.clarifications)
+    .find((clarification) => clarification.clientToken === clientToken);
+
+const findClarificationByResponseToken = (
+  database: ReviewDatabase,
+  clientToken: string,
+) =>
+  database.responses
+    .flatMap((response) => response.clarifications)
+    .find((clarification) => clarification.responseToken === clientToken);
+
 const resolvers = {
   Query: {
     workspace: () => {
       const database = reviewDataStore.snapshot();
       return {
         ...database,
+        versions: database.versions.map((version) =>
+          decorateVersion(database, version),
+        ),
         dashboard: getDashboard(database),
       };
     },
     dashboard: () => getDashboard(reviewDataStore.snapshot()),
   },
   Clause: {
-    responses: (clause: Clause, _args: unknown, context: { database: ReviewDatabase }) =>
-      context.database.responses.filter(
-        (response) => response.clauseId === clause.id,
-      ),
+    responses: (
+      clause: Clause,
+      _args: unknown,
+      context: { database: ReviewDatabase; activeVersionId: string },
+    ) =>
+      context.database.responses
+        .filter((response) => response.clauseId === clause.id)
+        .map((response) => ({
+          ...response,
+          status: deriveResponseStatus(response, context.activeVersionId),
+        })),
   },
   Mutation: {
-    submitAssessment: (
+    submitAssessment: async (
       _parent: unknown,
       { input }: { input: AssessmentInput },
     ) => {
@@ -98,7 +152,18 @@ const resolvers = {
       if (input.comment.trim().length < 6) {
         throw new Error("评审意见至少需要 6 个字符。");
       }
+      requireClientToken(input.clientToken);
       return reviewDataStore.mutate((database) => {
+        // 失败重试携带同一幂等键：直接返回已入库意见，绝不重复写入。
+        const existing = findOpinionByToken(database, input.clientToken);
+        if (existing) {
+          return existing;
+        }
+        const draft = requireOpenDraft(
+          database,
+          input.versionId,
+          input.expectedRevision,
+        );
         const response = database.responses.find(
           (item) => item.id === input.responseId,
         );
@@ -130,25 +195,41 @@ const resolvers = {
           score: input.score,
           comment: input.comment.trim(),
           createdAt: new Date().toISOString(),
+          versionId: draft.id,
+          clientToken: input.clientToken,
         };
         response.reviews.push(opinion);
-        response.status = input.decision;
         response.reviewRound = Math.max(response.reviewRound, 1);
+        draft.revision += 1;
         createAudit(
           database,
           opinion.reviewer,
           "提交独立意见",
           response.id,
-          `${clause.code} ${clause.title} 判定为 ${input.decision}，评分 ${input.score}。`,
+          `${clause.code} ${clause.title} 判定为 ${input.decision}，评分 ${input.score}，归属 ${draft.version}。`,
+          draft.id,
         );
         return opinion;
       });
     },
-    requestClarification: (
+    requestClarification: async (
       _parent: unknown,
       { input }: { input: ClarificationInput },
-    ) =>
-      reviewDataStore.mutate((database) => {
+    ) => {
+      requireClientToken(input.clientToken);
+      return reviewDataStore.mutate((database) => {
+        const existing = findClarificationByRequestToken(
+          database,
+          input.clientToken,
+        );
+        if (existing) {
+          return existing;
+        }
+        const draft = requireOpenDraft(
+          database,
+          input.versionId,
+          input.expectedRevision,
+        );
         const response = database.responses.find(
           (item) => item.id === input.responseId,
         );
@@ -171,7 +252,9 @@ const resolvers = {
         const round =
           Math.max(
             0,
-            ...response.clarifications.map((item) => item.round),
+            ...response.clarifications
+              .filter((item) => item.versionId === draft.id)
+              .map((item) => item.round),
           ) + 1;
         const clarification = {
           id: createClarificationId(),
@@ -182,103 +265,136 @@ const resolvers = {
           requestedAt: requestedAt.toISOString(),
           dueAt: dueAt.toISOString(),
           status: "open" as const,
+          versionId: draft.id,
+          clientToken: input.clientToken,
         };
         response.clarifications.push(clarification);
-        response.status = "clarification";
+        draft.revision += 1;
         createAudit(
           database,
           input.actor,
           "发起澄清",
           clarification.id,
-          `${response.supplierName} ${response.clauseId} 第 ${round} 轮澄清已发起。`,
+          `${response.supplierName} ${response.clauseId} 第 ${round} 轮澄清已发起，归属 ${draft.version}。`,
+          draft.id,
         );
         return clarification;
-      }),
-    respondClarification: (
+      });
+    },
+    respondClarification: async (
       _parent: unknown,
       { input }: { input: ClarificationResponseInput },
-    ) =>
-      reviewDataStore.mutate((database) => {
+    ) => {
+      if (input.responseText.trim().length < 6) {
+        throw new Error("澄清回复至少需要 6 个字符。");
+      }
+      requireClientToken(input.clientToken);
+      return reviewDataStore.mutate((database) => {
+        const existing = findClarificationByResponseToken(
+          database,
+          input.clientToken,
+        );
+        if (existing) {
+          return existing;
+        }
+        const draft = requireOpenDraft(
+          database,
+          input.versionId,
+          input.expectedRevision,
+        );
         const clarification = database.responses
           .flatMap((response) => response.clarifications)
           .find((item) => item.id === input.clarificationId);
         if (!clarification) {
           throw new Error("澄清记录不存在。");
         }
-        if (input.responseText.trim().length < 6) {
-          throw new Error("澄清回复至少需要 6 个字符。");
+        if (clarification.versionId !== draft.id) {
+          throw new VersionConflictError(
+            "该澄清属于已定稿版本，不能补充回复，请重新载入当前工作版。",
+          );
         }
         clarification.supplierResponse = input.responseText.trim();
         clarification.respondedAt = new Date().toISOString();
         clarification.status = "responded";
-        const response = database.responses.find(
-          (item) => item.id === clarification.responseId,
-        );
-        if (response) {
-          response.status = "pending";
-        }
+        clarification.responseToken = input.clientToken;
+        draft.revision += 1;
         createAudit(
           database,
           input.actor,
           "回复澄清",
           clarification.id,
-          `第 ${clarification.round} 轮澄清已回复，等待评审员复核。`,
+          `第 ${clarification.round} 轮澄清已回复，归属 ${draft.version}，等待评审员复核。`,
+          draft.id,
         );
         return clarification;
-      }),
-    finalizeVersion: (
+      });
+    },
+    finalizeVersion: async (
       _parent: unknown,
       { input }: { input: FinalizeVersionInput },
-    ) =>
-      reviewDataStore.mutate((database) => {
-        requireRole(input.role, ["chair"]);
-        if (input.label.trim().length < 4) {
-          throw new Error("版本名称至少需要 4 个字符。");
-        }
-        const blockingClarifications = database.responses
-          .flatMap((response) => response.clarifications)
-          .filter(
-            (clarification) =>
-              clarification.status === "open" ||
-              clarification.status === "overdue",
-          );
+    ) => {
+      requireRole(input.role, ["chair"]);
+      if (input.label.trim().length < 4) {
+        throw new Error("版本名称至少需要 4 个字符。");
+      }
+      return reviewDataStore.mutate((database) => {
+        const draft = requireOpenDraft(
+          database,
+          input.versionId,
+          input.expectedRevision,
+        );
+
+        // 按服务端此刻数据检查未完成澄清，只挡住未完成澄清这一项。
+        const blockingClarifications = versionClarifications(
+          database,
+          draft.id,
+        ).filter(isClarificationBlocking);
         if (blockingClarifications.length > 0) {
           throw new Error(
             `仍有 ${blockingClarifications.length} 项未完成澄清，不能定稿。`,
           );
         }
-        const maxVersion =
-          database.versions.reduce((maximum, version) => {
-            const numeric = Number(version.version.replace(/\D/g, ""));
-            return Number.isFinite(numeric)
-              ? Math.max(maximum, numeric)
-              : maximum;
-          }, 0) + 1;
-        database.versions.forEach((version) => {
-          version.status = "finalized";
-        });
-        const version = {
-          id: `VER-${Date.now()}`,
-          version: `V${maxVersion}`,
+
+        const now = new Date();
+        const stats = computeVersionStats(database, draft.id);
+
+        // 按服务端此刻数据锁定快照：计数与内容哈希一并冻结。
+        const locked: ReviewVersion = {
+          ...draft,
+          ...stats,
           label: input.label.trim(),
           status: "finalized" as const,
-          createdAt: new Date().toISOString(),
-          createdBy: input.actor,
           signedBy: [input.actor],
-          clauseCount: database.clauses.length,
-          responseCount: database.responses.length,
-          contentHash: Math.random().toString(16).slice(2, 10),
+          contentHash: hashSnapshot(database, draft.id),
         };
-        database.versions.unshift(version);
+        // 定稿后立刻创建新草稿承接后续意见，历史快照不再被覆盖。
+        const nextDraft = createDraftVersion(database, input.actor, now);
+        // 顺序：新草稿置顶，刚锁定版本次之，更旧的定稿依次在后。
+        database.versions = [
+          nextDraft,
+          locked,
+          ...database.versions.filter((version) => version.id !== draft.id),
+        ];
+
         createAudit(
           database,
           input.actor,
           "汇总签字定稿",
-          version.id,
-          `${version.version} ${version.label} 已锁定，签署人 ${input.actor}。`,
+          locked.id,
+          `${locked.version} ${locked.label} 已按当前数据锁定：${stats.opinionCount} 条独立意见、${stats.clarificationCount} 项澄清、${stats.differenceCount} 项分歧，签署人 ${input.actor}。`,
+          locked.id,
         );
-        return version;
-      }),
+        createAudit(
+          database,
+          input.actor,
+          "创建工作版本",
+          nextDraft.id,
+          `${nextDraft.version} 后续评审工作版已创建，新意见归属该版本。`,
+          nextDraft.id,
+        );
+        return locked;
+      });
+    },
     resetReviewData: () => {
       reviewDataStore.reset();
       return true;
@@ -294,9 +410,13 @@ const server = new ApolloServer({
 async function startServer(): Promise<void> {
   const { url } = await startStandaloneServer(server, {
     listen: { port: 18462, host: "0.0.0.0" },
-    context: async () => ({
-      database: reviewDataStore.snapshot(),
-    }),
+    context: async () => {
+      const database = reviewDataStore.snapshot();
+      return {
+        database,
+        activeVersionId: findActiveVersion(database)?.id ?? "",
+      };
+    },
   });
   console.log(`GraphQL mock server ready at ${url}`);
 }

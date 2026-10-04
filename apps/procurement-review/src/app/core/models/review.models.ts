@@ -21,6 +21,7 @@ export interface ReviewerOpinion {
   score: number;
   comment: string;
   createdAt: string;
+  versionId: string;
 }
 
 export interface Clarification {
@@ -34,6 +35,7 @@ export interface Clarification {
   dueAt: string;
   respondedAt?: string;
   status: ClarificationStatus;
+  versionId: string;
 }
 
 export interface SupplierResponse {
@@ -82,6 +84,12 @@ export interface ReviewVersion {
   signedBy: string[];
   clauseCount: number;
   responseCount: number;
+  opinionCount: number;
+  clarificationCount: number;
+  pendingClarificationCount: number;
+  differenceCount: number;
+  reviewedResponseCount: number;
+  revision: number;
   contentHash: string;
 }
 
@@ -92,6 +100,7 @@ export interface AuditLog {
   action: string;
   entity: string;
   detail: string;
+  versionId?: string;
 }
 
 export interface DashboardStats {
@@ -102,6 +111,10 @@ export interface DashboardStats {
   overdueClarifications: number;
   reusedProofs: number;
   activeVersion: string;
+  activeVersionId: string;
+  activeVersionRevision: number;
+  opinionCount: number;
+  clarificationCount: number;
 }
 
 export interface Supplier {
@@ -141,6 +154,15 @@ export interface WorkspaceQueryResult {
   };
 }
 
+/** 随一次提交生成、失败重试保持不变的幂等键。 */
+export const createClientToken = (): string => {
+  const cryptoApi = globalThis.crypto;
+  if (cryptoApi && typeof cryptoApi.randomUUID === "function") {
+    return cryptoApi.randomUUID();
+  }
+  return `token-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+};
+
 export interface AssessmentInput {
   responseId: string;
   decision: ComplianceStatus;
@@ -148,6 +170,9 @@ export interface AssessmentInput {
   comment: string;
   reviewer: string;
   role: ReviewRole;
+  clientToken: string;
+  versionId: string;
+  expectedRevision: number;
 }
 
 export interface ClarificationInput {
@@ -155,19 +180,63 @@ export interface ClarificationInput {
   requestText: string;
   dueAt: string;
   actor: string;
+  clientToken: string;
+  versionId: string;
+  expectedRevision: number;
 }
 
 export interface ClarificationResponseInput {
   clarificationId: string;
   responseText: string;
   actor: string;
+  clientToken: string;
+  versionId: string;
+  expectedRevision: number;
 }
 
 export interface FinalizeVersionInput {
   label: string;
   actor: string;
   role: ReviewRole;
+  versionId: string;
+  expectedRevision: number;
 }
+
+/** 当前版本视图下的响应：意见、澄清按版本过滤，状态按版本推导。 */
+export interface VersionedResponseView extends SupplierResponse {
+  scopedReviews: ReviewerOpinion[];
+  scopedClarifications: Clarification[];
+  derivedStatus: ComplianceStatus;
+}
+
+export const versionedResponse = (
+  response: SupplierResponse,
+  versionId: string,
+): VersionedResponseView => {
+  const scopedReviews = response.reviews.filter(
+    (review) => review.versionId === versionId,
+  );
+  const scopedClarifications = response.clarifications.filter(
+    (clarification) => clarification.versionId === versionId,
+  );
+  let derivedStatus: ComplianceStatus = "pending";
+  if (scopedClarifications.some((item) => item.status === "overdue")) {
+    derivedStatus = "clarification";
+  } else if (scopedClarifications.some((item) => item.status === "open")) {
+    derivedStatus = "clarification";
+  } else if (scopedReviews.length > 0) {
+    const latest = [...scopedReviews].sort(
+      (a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt),
+    )[0];
+    derivedStatus = latest.decision;
+  }
+  return {
+    ...response,
+    scopedReviews,
+    scopedClarifications,
+    derivedStatus,
+  };
+};
 
 export const roleProfiles: Record<ReviewRole, { name: string; label: string }> = {
   procurement: { name: "采购专员", label: "采购人员" },

@@ -29,16 +29,22 @@ import { TextareaModule } from "primeng/textarea";
 import { TreeModule } from "primeng/tree";
 import {
   complianceLabels,
+  createClientToken,
   roleProfiles,
+  versionedResponse,
   type Clause,
   type ComplianceStatus,
   type SupplierResponse,
+  type VersionedResponseView,
 } from "../../core/models/review.models";
 import { ReviewActions } from "../../core/state/review.actions";
 import {
   hasReviewDifference,
+  selectActiveVersionId,
   selectClauseTree,
+  selectDraftVersion,
   selectRole,
+  selectSaving,
 } from "../../core/state/review.selectors";
 import {
   ClarificationTagComponent,
@@ -81,6 +87,16 @@ export class ClausesPage {
   readonly role = toSignal(this.store.select(selectRole), {
     initialValue: "reviewer_a",
   });
+  readonly activeVersionId = toSignal(
+    this.store.select(selectActiveVersionId),
+    { initialValue: "" },
+  );
+  readonly draftVersion = toSignal(this.store.select(selectDraftVersion), {
+    initialValue: undefined,
+  });
+  readonly saving = toSignal(this.store.select(selectSaving), {
+    initialValue: false,
+  });
   readonly selectedTreeKey = signal<string | null>(null);
   readonly selectedSupplierId = signal<string | null>(null);
   readonly clarificationVisible = signal(false);
@@ -91,38 +107,49 @@ export class ClausesPage {
     }
     return this.findClause(this.treeNodes(), key) ?? null;
   });
-  readonly selectedResponse = computed(() => {
+  readonly selectedResponse = computed<VersionedResponseView | null>(() => {
     const clause = this.selectedClause();
-    if (!clause) {
+    const versionId = this.activeVersionId();
+    if (!clause || !versionId) {
       return null;
     }
-    return (
-      clause.responses.find(
-        (response) => response.supplierId === this.selectedSupplierId(),
-      ) ??
-      clause.responses[0] ??
-      null
+    const match = clause.responses.find(
+      (response) => response.supplierId === this.selectedSupplierId(),
     );
+    const target = match ?? clause.responses[0];
+    return target ? versionedResponse(target, versionId) : null;
   });
-  readonly canReview = computed(() => this.role() !== "procurement");
+  readonly canReview = computed(
+    () => this.role() !== "procurement" && this.draftVersion() !== undefined,
+  );
   readonly clauseRisks = computed(() => {
     const clause = this.selectedClause();
-    if (!clause) {
+    const versionId = this.activeVersionId();
+    if (!clause || !versionId) {
       return [];
     }
     const risks: string[] = [];
+    const views = clause.responses.map((response) =>
+      versionedResponse(response, versionId),
+    );
     if (
       clause.type === "mandatory" &&
-      clause.responses.some((response) => response.status === "pending")
+      views.some(
+        (view) =>
+          view.derivedStatus === "pending" ||
+          view.derivedStatus === "clarification",
+      )
     ) {
       risks.push("存在尚未明确结论的否决项");
     }
-    if (clause.responses.some(hasReviewDifference)) {
+    if (
+      views.some((view) => hasReviewDifference(view, versionId))
+    ) {
       risks.push("不同评审员意见存在分歧，必须保留并进入小组复核");
     }
     if (
-      clause.responses.some((response) =>
-        response.clarifications.some(
+      views.some((view) =>
+        view.scopedClarifications.some(
           (clarification) => clarification.status === "overdue",
         ),
       )
@@ -130,14 +157,14 @@ export class ClausesPage {
       risks.push("存在逾期澄清，不得直接形成最终结论");
     }
     const duplicatedProof = new Set<string>();
-    clause.responses.forEach((response) => {
+    views.forEach((view) => {
       if (
-        clause.responses.filter(
+        views.filter(
           (candidate) =>
-            candidate.proofFingerprint === response.proofFingerprint,
+            candidate.proofFingerprint === view.proofFingerprint,
         ).length > 1
       ) {
-        duplicatedProof.add(response.proofFingerprint);
+        duplicatedProof.add(view.proofFingerprint);
       }
     });
     if (duplicatedProof.size > 0) {
@@ -197,9 +224,10 @@ export class ClausesPage {
   }
 
   submitAssessment(): void {
-    const response = this.selectedResponse();
+    const view = this.selectedResponse();
     const clause = this.selectedClause();
-    if (!response || !clause || this.assessmentForm.invalid) {
+    const draft = this.draftVersion();
+    if (this.saving() || !view || !clause || !draft || this.assessmentForm.invalid) {
       this.assessmentForm.markAllAsTouched();
       return;
     }
@@ -210,12 +238,15 @@ export class ClausesPage {
     this.store.dispatch(
       ReviewActions.submitAssessment({
         input: {
-          responseId: response.id,
+          responseId: view.id,
           decision: value.decision,
           score: clause.type === "scoring" ? value.score : 0,
           comment: value.comment,
           reviewer: roleProfiles[this.role()].name,
           role: this.role(),
+          clientToken: createClientToken(),
+          versionId: draft.id,
+          expectedRevision: draft.revision,
         },
       }),
     );
@@ -230,8 +261,9 @@ export class ClausesPage {
   }
 
   submitClarification(): void {
-    const response = this.selectedResponse();
-    if (!response || this.clarificationForm.invalid) {
+    const view = this.selectedResponse();
+    const draft = this.draftVersion();
+    if (this.saving() || !view || !draft || this.clarificationForm.invalid) {
       this.clarificationForm.markAllAsTouched();
       return;
     }
@@ -239,22 +271,32 @@ export class ClausesPage {
     this.store.dispatch(
       ReviewActions.requestClarification({
         input: {
-          responseId: response.id,
+          responseId: view.id,
           requestText: value.requestText,
           dueAt: value.dueAt.toISOString(),
           actor: roleProfiles[this.role()].name,
+          clientToken: createClientToken(),
+          versionId: draft.id,
+          expectedRevision: draft.revision,
         },
       }),
     );
     this.clarificationVisible.set(false);
   }
 
+  /** 模板使用：按当前版本展示响应状态。 */
+  scopedView(response: SupplierResponse): VersionedResponseView {
+    const versionId = this.activeVersionId();
+    return versionedResponse(response, versionId);
+  }
+
   latestOpinion(
     response: SupplierResponse,
     reviewer: string,
   ): string | undefined {
-    return response.reviews.find((review) => review.reviewer === reviewer)
-      ?.comment;
+    return response.reviews
+      .filter((review) => review.versionId === this.activeVersionId())
+      .find((review) => review.reviewer === reviewer)?.comment;
   }
 
   private findClause(
@@ -286,11 +328,12 @@ export class ClausesPage {
     if (!response) {
       return;
     }
-    const latest = [...response.reviews].sort(
+    const view = versionedResponse(response, this.activeVersionId());
+    const latest = [...view.scopedReviews].sort(
       (a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt),
     )[0];
     this.assessmentForm.reset({
-      decision: latest?.decision ?? response.status,
+      decision: latest?.decision ?? view.derivedStatus,
       score: latest?.score ?? response.claimedScore,
       comment: "",
     });

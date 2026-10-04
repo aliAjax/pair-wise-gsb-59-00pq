@@ -48,6 +48,7 @@ const WORKSPACE_QUERY = gql`
             score
             comment
             createdAt
+            versionId
           }
           clarifications {
             id
@@ -60,6 +61,7 @@ const WORKSPACE_QUERY = gql`
             dueAt
             respondedAt
             status
+            versionId
           }
         }
       }
@@ -73,6 +75,12 @@ const WORKSPACE_QUERY = gql`
         signedBy
         clauseCount
         responseCount
+        opinionCount
+        clarificationCount
+        pendingClarificationCount
+        differenceCount
+        reviewedResponseCount
+        revision
         contentHash
       }
       auditLogs {
@@ -82,6 +90,7 @@ const WORKSPACE_QUERY = gql`
         action
         entity
         detail
+        versionId
       }
       dashboard {
         totalClauses
@@ -91,6 +100,10 @@ const WORKSPACE_QUERY = gql`
         overdueClarifications
         reusedProofs
         activeVersion
+        activeVersionId
+        activeVersionRevision
+        opinionCount
+        clarificationCount
       }
       suppliers {
         id
@@ -111,6 +124,7 @@ const SUBMIT_ASSESSMENT = gql`
       score
       comment
       createdAt
+      versionId
     }
   }
 `;
@@ -128,6 +142,7 @@ const REQUEST_CLARIFICATION = gql`
       dueAt
       respondedAt
       status
+      versionId
     }
   }
 `;
@@ -145,6 +160,7 @@ const RESPOND_CLARIFICATION = gql`
       dueAt
       respondedAt
       status
+      versionId
     }
   }
 `;
@@ -161,6 +177,12 @@ const FINALIZE_VERSION = gql`
       signedBy
       clauseCount
       responseCount
+      opinionCount
+      clarificationCount
+      pendingClarificationCount
+      differenceCount
+      reviewedResponseCount
+      revision
       contentHash
     }
   }
@@ -197,7 +219,6 @@ export class ReviewGraphqlService {
       .mutate<{ submitAssessment: ReviewerOpinion }>({
         mutation: SUBMIT_ASSESSMENT,
         variables: { input },
-        refetchQueries: ["ProcurementReviewWorkspace"],
       })
       .pipe(
         map((result) => {
@@ -214,7 +235,6 @@ export class ReviewGraphqlService {
       .mutate<{ requestClarification: Clarification }>({
         mutation: REQUEST_CLARIFICATION,
         variables: { input },
-        refetchQueries: ["ProcurementReviewWorkspace"],
       })
       .pipe(
         map((result) => {
@@ -233,7 +253,6 @@ export class ReviewGraphqlService {
       .mutate<{ respondClarification: Clarification }>({
         mutation: RESPOND_CLARIFICATION,
         variables: { input },
-        refetchQueries: ["ProcurementReviewWorkspace"],
       })
       .pipe(
         map((result) => {
@@ -250,7 +269,6 @@ export class ReviewGraphqlService {
       .mutate<{ finalizeVersion: ReviewVersion }>({
         mutation: FINALIZE_VERSION,
         variables: { input },
-        refetchQueries: ["ProcurementReviewWorkspace"],
       })
       .pipe(
         map((result) => {
@@ -266,7 +284,6 @@ export class ReviewGraphqlService {
     return this.apollo
       .mutate<{ resetReviewData: boolean }>({
         mutation: RESET_REVIEW_DATA,
-        refetchQueries: ["ProcurementReviewWorkspace"],
       })
       .pipe(
         map((result) => {
